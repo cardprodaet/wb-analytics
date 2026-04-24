@@ -1,7 +1,6 @@
 import requests
 import gspread
 import time
-import schedule
 from datetime import datetime, timedelta
 from google.oauth2.service_account import Credentials
 
@@ -20,7 +19,7 @@ def get_config():
     client = get_client()
     ss = client.open_by_key(SPREADSHEET_ID)
     sheet = ss.worksheet('Настройки')
-    api_key = sheet.acell('B2').value
+    api_key = sheet.acell('B2').value.strip()
     date_from = sheet.acell('B3').value
     date_to = sheet.acell('B4').value
     return api_key, date_from, date_to
@@ -137,18 +136,45 @@ def load_funnel():
         time.sleep(2)
     print(f'Воронка загружена! Товаров: {len(all_products)}')
 
-def run_daily_update():
+def load_stocks():
+    print('Загружаем остатки...')
+    api_key, date_from, date_to = get_config()
+    url = f'https://statistics-api.wildberries.ru/api/v1/supplier/stocks?dateFrom={date_from}T00:00:00'
+    headers = {'Authorization': api_key}
+    while True:
+        resp = requests.get(url, headers=headers)
+        if resp.status_code == 429:
+            print('Лимит - ждем 60 сек...')
+            time.sleep(60)
+            continue
+        break
+    if resp.status_code != 200:
+        print(f'Ошибка: {resp.text}')
+        return
+    data = resp.json()
+    if not data:
+        print('Нет данных')
+        return
+    client = get_client()
+    ss = client.open_by_key(SPREADSHEET_ID)
+    sheet = ss.worksheet('Остатки')
+    sheet.clear()
+    headers_row = list(data[0].keys()) if data else []
+    rows = [headers_row] + [[str(item.get(h, '')) for h in headers_row] for item in data]
+    for i in range(0, len(rows), 500):
+        chunk = rows[i:i+500]
+        if i == 0:
+            sheet.update(chunk, 'A1')
+        else:
+            sheet.append_rows(chunk)
+        time.sleep(2)
+    print(f'Остатки загружены! Позиций: {len(data)}')
+
+if __name__ == '__main__':
     print(f'Запуск обновления: {datetime.now()}')
     update_dates()
     time.sleep(5)
     load_funnel()
+    time.sleep(10)
+    load_stocks()
     print(f'Обновление завершено: {datetime.now()}')
-
-if __name__ == '__main__':
-    print('WB Аналитика - Python бот запущен!')
-    schedule.every().day.at('01:00').do(run_daily_update)
-    #print('Запускаем тестовое обновление...')
-    #run_daily_update()
-    while True:
-        schedule.run_pending()
-        time.sleep(60)
