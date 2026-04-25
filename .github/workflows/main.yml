@@ -2,27 +2,27 @@ name: WB Analytics Daily Update
 
 on:
   schedule:
-    - cron: '0 1 * * *'  # каждый день в 01:00 UTC
-  workflow_dispatch:  # ручной запуск
+    - cron: '0 6 * * *'  # каждый день в 06:00 UTC = 09:00 МСК
+  workflow_dispatch:
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    
+    timeout-minutes: 120
+
     steps:
-    - uses: actions/checkout@v3
-    
+    - uses: actions/checkout@v4
+
     - name: Set up Python
-      uses: actions/setup-python@v4
+      uses: actions/setup-python@v5
       with:
         python-version: '3.11'
-    
+
     - name: Install dependencies
       run: pip install -r requirements.txt
-    
+
     - name: Create credentials file
       run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
-    
+
     - name: Run update
       run: python main.py
-      timeout-minutes: 30
