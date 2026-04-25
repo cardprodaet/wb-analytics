@@ -2,13 +2,13 @@ name: WB Analytics Daily Update
 
 on:
   schedule:
-    - cron: '0 6 * * *'  # каждый день в 06:00 UTC = 09:00 МСК
+    - cron: '0 4 * * *'  # каждый день в 04:00 UTC = 07:00 МСК
   workflow_dispatch:
 
 jobs:
   update:
     runs-on: ubuntu-latest
-    timeout-minutes: 120
+    timeout-minutes: 180
 
     steps:
     - uses: actions/checkout@v4
