@@ -282,7 +282,11 @@ def load_rk_period(api_key, date_from, date_to, ss, sheet_name):
         stats_url = f'https://advert-api.wildberries.ru/adv/v3/fullstats?ids={",".join(map(str, chunk))}&beginDate={date_from}&endDate={date_to}'
         resp = wb_get(stats_url, api_key)
         if resp.status_code == 200:
-            for camp in resp.json():
+            data = resp.json()
+            if not data:
+                time.sleep(22)
+                continue
+            for camp in data:
                 for day in camp.get('days', []):
                     for app in day.get('apps', []):
                         for nm in app.get('nms', []):
