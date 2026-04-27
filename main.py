@@ -231,8 +231,10 @@ def load_ads(api_key, date_from, date_to, ss):
         return
     all_ids = []
     for item in resp.json().get('adverts', []):
-        for advert in item.get('advert_list', []):
-            all_ids.append(advert.get('advertId'))
+        # Берём только активные (9) и на паузе (11) кампании
+        if item.get('status') in [9, 11]:
+            for advert in item.get('advert_list', []):
+                all_ids.append(advert.get('advertId'))
     print(f'Кампаний: {len(all_ids)}')
     all_stats = []
     for i in range(0, len(all_ids), 50):
