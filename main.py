@@ -26,7 +26,7 @@ def update_timestamp(ss, name, status):
     try:
         sheet = ss.worksheet('Настройки')
         now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
-        sheet.update('D2', [['Последнее обновление:', name, now, status]])
+        sheet.update(values=[['Последнее обновление:', name, now, status]], range_name='D2')
         print(f'Индикатор: {name} — {status}')
     except Exception as e:
         print(f'Ошибка индикатора: {e}')
