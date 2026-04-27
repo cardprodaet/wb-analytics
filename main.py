@@ -242,7 +242,9 @@ def load_ads(api_key, date_from, date_to, ss):
         stats_url = f'https://advert-api.wildberries.ru/adv/v3/fullstats?ids={",".join(map(str, chunk))}&beginDate={date_from}&endDate={date_to}'
         resp = wb_get(stats_url, api_key)
         if resp.status_code == 200:
-            all_stats.extend(resp.json())
+            data = resp.json()
+            if data:
+                all_stats.extend(data)
         time.sleep(22)
     if not all_stats:
         return
