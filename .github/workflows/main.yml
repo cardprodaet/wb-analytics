@@ -2,7 +2,7 @@ name: WB Analytics Daily Update
 
 on:
   schedule:
-    - cron: '0 3 * * *'  # 03:00 UTC = 06:00 МСК
+    - cron: '0 3 * * *'
   workflow_dispatch:
 
 jobs:
@@ -19,7 +19,7 @@ jobs:
       run: pip install -r requirements.txt
     - name: Create credentials file
       run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
-    - name: Run part 1
+    - name: Run part 1 - Funnel and Stats
       run: python main1.py
 
   update-part2:
@@ -36,5 +36,22 @@ jobs:
       run: pip install -r requirements.txt
     - name: Create credentials file
       run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
-    - name: Run part 2
+    - name: Run part 2 - Ads and RK
       run: python main2.py
+
+  update-part3:
+    runs-on: ubuntu-latest
+    timeout-minutes: 180
+    needs: update-part2
+    steps:
+    - uses: actions/checkout@v4
+    - name: Set up Python
+      uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - name: Install dependencies
+      run: pip install -r requirements.txt
+    - name: Create credentials file
+      run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+    - name: Run part 3 - Funnel periods
+      run: python main3.py
