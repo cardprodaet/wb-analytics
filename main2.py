@@ -251,6 +251,7 @@ if __name__ == '__main__':
     yesterday   = (today - timedelta(days=1)).strftime('%Y-%m-%d')
     week_from   = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
+    days14_to = (today - timedelta(days=8)).strftime('%Y-%m-%d')
     month_from  = today.replace(day=1).strftime('%Y-%m-%d')
 
     load_ads(api_key, date_from, date_to, ss)
@@ -259,7 +260,7 @@ if __name__ == '__main__':
     time.sleep(10)
     load_rk_period(api_key, week_from, yesterday, ss, 'РК Неделя')
     time.sleep(10)
-    load_rk_period(api_key, days14_from, yesterday, ss, 'РК 14 Дней')
+    load_rk_period(api_key, days14_from, days14_to, ss, 'РК 14 Дней')
     time.sleep(10)
     load_rk_period(api_key, month_from, yesterday, ss, 'РК Месяц')
     time.sleep(10)
