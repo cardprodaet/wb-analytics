@@ -104,7 +104,7 @@ def load_funnel(api_key, date_from, date_to, ss):
             break
         offset += limit
         page += 1
-        time.sleep(20)
+        time.sleep(60)
     if not all_products:
         update_timestamp(ss, 'Воронка', '❌ Нет данных')
         return
