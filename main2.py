@@ -113,7 +113,7 @@ def load_ads(api_key, date_from, date_to, ss):
         ctr = round(clicks / views * 100, 2) if views > 0 else 0
         cpc = round(spend / clicks, 2) if clicks > 0 else 0
         drr = round(spend / order_sum * 100, 1) if order_sum > 0 else 0
-        rows.append([camp.get('advertId', ''), camp.get('advertName', ''),
+        rows.append([str(camp.get('advertId', '')), camp.get('advertName', ''),
             views, clicks, ctr, cpc, spend, orders, order_sum, drr])
     write_sheet(ss, 'Реклама', rows)
     update_timestamp(ss, 'Реклама', f'✅ Готово — {len(all_stats)} кампаний')
