@@ -59,6 +59,7 @@ def write_sheet(ss, name, rows):
     try:
         sheet = ss.worksheet(name)
         sheet.clear()
+        time.sleep(3)
         for i in range(0, len(rows), 500):
             chunk = rows[i:i+500]
             if i == 0:
