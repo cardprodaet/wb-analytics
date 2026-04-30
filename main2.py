@@ -83,6 +83,16 @@ def get_campaign_ids(api_key):
     return all_ids
 
 def load_ads(api_key, date_from, date_to, ss):
+    # Читаем существующие названия кампаний
+    camp_names = {}
+    try:
+        ads_sheet = ss.worksheet('Реклама')
+        ads_data = ads_sheet.get_all_values()
+        for row in ads_data[1:]:
+            if row and len(row) >= 2:
+                camp_names[str(row[0])] = row[1]
+    except Exception as e:
+        log.warning(f'Не удалось прочитать названия: {e}')
     log.info('Загружаем рекламу...')
     update_timestamp(ss, 'Реклама', '🔄 Загружается...')
     all_ids = get_campaign_ids(api_key)
@@ -113,7 +123,7 @@ def load_ads(api_key, date_from, date_to, ss):
         ctr = round(clicks / views * 100, 2) if views > 0 else 0
         cpc = round(spend / clicks, 2) if clicks > 0 else 0
         drr = round(spend / order_sum * 100, 1) if order_sum > 0 else 0
-        rows.append([str(camp.get('advertId', '')), camp.get('advertName', ''),
+        rows.append([str(camp.get('advertId', '')), camp_names.get(str(camp.get('advertId', '')), ''),
             views, clicks, ctr, cpc, spend, orders, order_sum, drr])
     write_sheet(ss, 'Реклама', rows)
     update_timestamp(ss, 'Реклама', f'✅ Готово — {len(all_stats)} кампаний')
