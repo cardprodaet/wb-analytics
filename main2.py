@@ -43,8 +43,9 @@ def wb_request(method, url, api_key, max_retries=10, **kwargs):
         try:
             resp = getattr(requests, method)(url, headers=headers, timeout=30, **kwargs)
             if resp.status_code == 429:
-                log.warning('Лимит 429 — ждем 30 сек...')
-                time.sleep(30)
+                wait = 30 * (attempt + 1)
+                log.warning(f'Лимит 429 — ждем {wait} сек...')
+                time.sleep(wait)
                 continue
             if resp.status_code == 200:
                 return resp
@@ -82,6 +83,69 @@ def get_campaign_ids(api_key):
             all_ids.append(advert.get('advertId'))
     return all_ids
 
+def get_all_rk_stats(api_key, all_ids, date_from, date_to):
+    """Загружаем статистику по всем кампаниям за один период"""
+    all_stats = []
+    log.info(f'Загружаем статистику {len(all_ids)} кампаний за {date_from} — {date_to}')
+    for i in range(0, len(all_ids), 50):
+        chunk = all_ids[i:i+50]
+        url = f'https://advert-api.wildberries.ru/adv/v3/fullstats?ids={",".join(map(str, chunk))}&beginDate={date_from}&endDate={date_to}'
+        resp = wb_request('get', url, api_key)
+        if resp:
+            data = resp.json()
+            if data:
+                all_stats.extend(data)
+        time.sleep(22)
+        if (i // 50 + 1) % 10 == 0:
+            log.info(f'Прогресс: {i+50}/{len(all_ids)} кампаний')
+    return all_stats
+
+def write_rk_from_stats(all_stats, date_from, date_to, ss, sheet_name, camp_names={}):
+    """Записываем РК период из уже загруженной статистики фильтруя по датам"""
+    log.info(f'Записываем {sheet_name} за {date_from} — {date_to}')
+    update_timestamp(ss, sheet_name, '🔄 Записываем...')
+    
+    dt_from = datetime.strptime(date_from, '%Y-%m-%d')
+    dt_to = datetime.strptime(date_to, '%Y-%m-%d')
+    
+    nm_stats = {}
+    for camp in all_stats:
+        for day in camp.get('days', []):
+            day_date = datetime.strptime(day.get('date', '')[:10], '%Y-%m-%d')
+            if not (dt_from <= day_date <= dt_to):
+                continue
+            for app in day.get('apps', []):
+                for nm in app.get('nms', []):
+                    key = str(nm.get('nmId'))
+                    if key not in nm_stats:
+                        nm_stats[key] = {
+                            'nmId': nm.get('nmId'),
+                            'name': nm.get('name', ''),
+                            'views': 0, 'clicks': 0,
+                            'sum': 0, 'orders': 0, 'orderSum': 0
+                        }
+                    nm_stats[key]['views']    += nm.get('views', 0)
+                    nm_stats[key]['clicks']   += nm.get('clicks', 0)
+                    nm_stats[key]['sum']      += nm.get('sum', 0)
+                    nm_stats[key]['orders']   += nm.get('orders', 0)
+                    nm_stats[key]['orderSum'] += nm.get('sum_price', 0)
+
+    if not nm_stats:
+        update_timestamp(ss, sheet_name, '❌ Нет данных')
+        return
+
+    rows = [['Артикул WB', 'Название', 'Показы', 'Клики', 'CTR %', 'CPC ₽', 'Расход ₽', 'Заказы', 'Сумма заказов ₽', 'ДРР %',
+             f'Период: {date_from} — {date_to}']]
+    for nm in nm_stats.values():
+        ctr = round(nm['clicks'] / nm['views'] * 100, 2) if nm['views'] > 0 else 0
+        cpc = round(nm['sum'] / nm['clicks'], 2) if nm['clicks'] > 0 else 0
+        drr = round(nm['sum'] / nm['orderSum'] * 100, 1) if nm['orderSum'] > 0 else 0
+        rows.append([nm['nmId'], nm['name'], nm['views'], nm['clicks'],
+            ctr, cpc, nm['sum'], nm['orders'], nm['orderSum'], drr, ''])
+    rows.sort(key=lambda x: x[6] if isinstance(x[6], (int, float)) else 0, reverse=True)
+    write_sheet(ss, sheet_name, rows)
+    update_timestamp(ss, sheet_name, f'✅ Готово — {len(nm_stats)} артикулов')
+
 def load_ads(api_key, date_from, date_to, ss):
     # Читаем существующие названия кампаний
     camp_names = {}
@@ -91,6 +155,7 @@ def load_ads(api_key, date_from, date_to, ss):
         for row in ads_data[1:]:
             if row and len(row) >= 2:
                 camp_names[str(row[0])] = row[1]
+        log.info(f'Прочитано названий: {len(camp_names)}')
     except Exception as e:
         log.warning(f'Не удалось прочитать названия: {e}')
     log.info('Загружаем рекламу...')
@@ -123,53 +188,11 @@ def load_ads(api_key, date_from, date_to, ss):
         ctr = round(clicks / views * 100, 2) if views > 0 else 0
         cpc = round(spend / clicks, 2) if clicks > 0 else 0
         drr = round(spend / order_sum * 100, 1) if order_sum > 0 else 0
-        rows.append([str(camp.get('advertId', '')), camp_names.get(str(camp.get('advertId', '')), ''),
+        camp_id = str(camp.get('advertId', ''))
+        rows.append([camp_id, camp_names.get(camp_id, ''),
             views, clicks, ctr, cpc, spend, orders, order_sum, drr])
     write_sheet(ss, 'Реклама', rows)
     update_timestamp(ss, 'Реклама', f'✅ Готово — {len(all_stats)} кампаний')
-
-def load_rk_period(api_key, date_from, date_to, ss, sheet_name):
-    log.info(f'Загружаем {sheet_name}...')
-    update_timestamp(ss, sheet_name, '🔄 Загружается...')
-    all_ids = get_campaign_ids(api_key)
-    if not all_ids:
-        update_timestamp(ss, sheet_name, '❌ Нет кампаний')
-        return
-    nm_stats = {}
-    for i in range(0, len(all_ids), 50):
-        chunk = all_ids[i:i+50]
-        url = f'https://advert-api.wildberries.ru/adv/v3/fullstats?ids={",".join(map(str, chunk))}&beginDate={date_from}&endDate={date_to}'
-        resp = wb_request('get', url, api_key)
-        if resp:
-            data = resp.json()
-            if data:
-                for camp in data:
-                    for day in camp.get('days', []):
-                        for app in day.get('apps', []):
-                            for nm in app.get('nms', []):
-                                key = str(nm.get('nmId'))
-                                if key not in nm_stats:
-                                    nm_stats[key] = {'nmId': nm.get('nmId'), 'name': nm.get('name', ''),
-                                        'views': 0, 'clicks': 0, 'sum': 0, 'orders': 0, 'orderSum': 0}
-                                nm_stats[key]['views']    += nm.get('views', 0)
-                                nm_stats[key]['clicks']   += nm.get('clicks', 0)
-                                nm_stats[key]['sum']      += nm.get('sum', 0)
-                                nm_stats[key]['orders']   += nm.get('orders', 0)
-                                nm_stats[key]['orderSum'] += nm.get('sum_price', 0)
-        time.sleep(22)
-    if not nm_stats:
-        update_timestamp(ss, sheet_name, '❌ Нет данных')
-        return
-    rows = [['Артикул WB', 'Название', 'Показы', 'Клики', 'CTR %', 'CPC ₽', 'Расход ₽', 'Заказы', 'Сумма заказов ₽', 'ДРР %']]
-    for nm in nm_stats.values():
-        ctr = round(nm['clicks'] / nm['views'] * 100, 2) if nm['views'] > 0 else 0
-        cpc = round(nm['sum'] / nm['clicks'], 2) if nm['clicks'] > 0 else 0
-        drr = round(nm['sum'] / nm['orderSum'] * 100, 1) if nm['orderSum'] > 0 else 0
-        rows.append([nm['nmId'], nm['name'], nm['views'], nm['clicks'],
-            ctr, cpc, nm['sum'], nm['orders'], nm['orderSum'], drr])
-    rows.sort(key=lambda x: x[6] if isinstance(x[6], (int, float)) else 0, reverse=True)
-    write_sheet(ss, sheet_name, rows)
-    update_timestamp(ss, sheet_name, f'✅ Готово — {len(nm_stats)} артикулов')
 
 def load_funnel_period(api_key, date_from, date_to, ss, sheet_name):
     log.info(f'Загружаем {sheet_name}...')
@@ -198,7 +221,7 @@ def load_funnel_period(api_key, date_from, date_to, ss, sheet_name):
             break
         offset += limit
         page += 1
-        time.sleep(20)
+        time.sleep(60)
     if not all_products:
         update_timestamp(ss, sheet_name, '❌ Нет данных')
         return
@@ -262,24 +285,35 @@ if __name__ == '__main__':
     yesterday   = (today - timedelta(days=1)).strftime('%Y-%m-%d')
     week_from   = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
-    days14_to = (today - timedelta(days=8)).strftime('%Y-%m-%d')
+    days14_to   = (today - timedelta(days=8)).strftime('%Y-%m-%d')
     month_from  = today.replace(day=1).strftime('%Y-%m-%d')
 
+    # Реклама
     load_ads(api_key, date_from, date_to, ss)
     time.sleep(10)
-    load_rk_period(api_key, yesterday, yesterday, ss, 'РК День')
+
+    # Загружаем все РК за месяц ОДИН РАЗ
+    log.info('Загружаем все РК периоды за один проход...')
+    all_ids = get_campaign_ids(api_key)
+    if all_ids:
+        month_stats = get_all_rk_stats(api_key, all_ids, month_from, yesterday)
+        time.sleep(10)
+        write_rk_from_stats(month_stats, yesterday, yesterday, ss, 'РК День')
+        time.sleep(5)
+        write_rk_from_stats(month_stats, week_from, yesterday, ss, 'РК Неделя')
+        time.sleep(5)
+        write_rk_from_stats(month_stats, days14_from, days14_to, ss, 'РК 14 Дней')
+        time.sleep(5)
+        write_rk_from_stats(month_stats, month_from, yesterday, ss, 'РК Месяц')
+
     time.sleep(10)
-    load_rk_period(api_key, week_from, yesterday, ss, 'РК Неделя')
-    time.sleep(10)
-    load_rk_period(api_key, days14_from, days14_to, ss, 'РК 14 Дней')
-    time.sleep(10)
-    load_rk_period(api_key, month_from, yesterday, ss, 'РК Месяц')
-    time.sleep(10)
+
+    # Воронки периодов
     load_funnel_period(api_key, yesterday, yesterday, ss, 'Воронка День')
     time.sleep(10)
     load_funnel_period(api_key, week_from, yesterday, ss, 'Воронка Неделя')
     time.sleep(10)
-    load_funnel_period(api_key, days14_from, yesterday, ss, 'Воронка 14 Дней')
+    load_funnel_period(api_key, days14_from, days14_to, ss, 'Воронка 14 Дней')
     time.sleep(10)
     load_funnel_period(api_key, month_from, yesterday, ss, 'Воронка Месяц')
 
