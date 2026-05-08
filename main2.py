@@ -225,6 +225,7 @@ def load_funnel_period(api_key, date_from, date_to, ss, sheet_name):
     if not all_products:
         update_timestamp(ss, sheet_name, '❌ Нет данных')
         return
+    headers_row_period = f'Период: {date_from} — {date_to}'
     headers_row = [
         'Артикул продавца', 'Артикул WB', 'Название', 'Предмет', 'Бренд',
         'Переходы в карточку', 'Переходы (пред.период)',
@@ -240,7 +241,7 @@ def load_funnel_period(api_key, date_from, date_to, ss, sheet_name):
         'Выкупили на сумму', 'Выкупили сумма (пред.)',
         'Средняя цена', 'Средняя цена (пред.)',
         'Остатки WB', 'Рейтинг товара', 'Рейтинг отзывов',
-        'Время доставки ч', 'Время доставки пред ч',
+        'Время доставки ч', 'Время доставки пред ч', headers_row_period
     ]
     rows = [headers_row]
     for item in all_products:
