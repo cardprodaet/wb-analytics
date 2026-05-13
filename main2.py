@@ -35,7 +35,9 @@ def update_timestamp(ss, name, status):
     except Exception as e:
         log.error(f'Ошибка индикатора: {e}')
  
-def wb_request(method, url, api_key, max_retries=10, **kwargs):
+def wb_request(method, url, api_key, max_retries=5, **kwargs):
+    """ВАЖНО: если приходит 404 — НЕ ретраим, сразу возвращаем None.
+    404 = неправильный путь, ретраи бесполезны и забивают лог."""
     headers = {'Authorization': api_key}
     if 'json' in kwargs:
         headers['Content-Type'] = 'application/json'
@@ -49,6 +51,9 @@ def wb_request(method, url, api_key, max_retries=10, **kwargs):
                 continue
             if resp.status_code == 200:
                 return resp
+            if resp.status_code == 404:
+                log.error(f'404 Not Found: {url[:120]} — ретраи отключены, возвращаем None')
+                return None
             log.error(f'Ошибка {resp.status_code}: {resp.text[:200]}')
             time.sleep(30)
         except Exception as e:
@@ -61,7 +66,6 @@ def write_sheet(ss, name, rows):
         sheet = ss.worksheet(name)
         sheet.clear()
         time.sleep(3)
-        # resize(1) убран — он не нужен и создаёт лишний API-вызов
         for i in range(0, len(rows), 500):
             chunk = rows[i:i+500]
             if i == 0:
@@ -84,34 +88,6 @@ def get_campaign_ids(api_key):
             all_ids.append(advert.get('advertId'))
     return all_ids
  
-def get_campaign_names(api_key, all_ids):
-    """Запрашиваем актуальные названия кампаний из WB API.
-    POST /adv/v1/promotion/adverts принимает до 50 ID в body, лимит 5 запр/сек.
-    Возвращает {advertId(str): name}.
-    """
-    camp_names = {}
-    if not all_ids:
-        return camp_names
-    url = 'https://advert-api.wildberries.ru/adv/v1/promotion/adverts'
-    log.info(f'Запрашиваем названия для {len(all_ids)} кампаний...')
-    for i in range(0, len(all_ids), 50):
-        chunk = all_ids[i:i+50]
-        resp = wb_request('post', url, api_key, json=chunk)
-        if resp:
-            try:
-                data = resp.json()
-                if isinstance(data, list):
-                    for item in data:
-                        adv_id = item.get('advertId')
-                        name = item.get('name', '')
-                        if adv_id is not None:
-                            camp_names[str(adv_id)] = name
-            except Exception as e:
-                log.warning(f'Не удалось распарсить ответ названий: {e}')
-        time.sleep(1)  # лимит 5 запр/сек, берём 1 сек с запасом
-    log.info(f'Получено названий: {len(camp_names)}')
-    return camp_names
- 
 def get_all_rk_stats(api_key, all_ids, date_from, date_to):
     """Загружаем статистику по всем кампаниям за один период"""
     all_stats = []
@@ -129,6 +105,22 @@ def get_all_rk_stats(api_key, all_ids, date_from, date_to):
             log.info(f'Прогресс: {i+50}/{len(all_ids)} кампаний')
     return all_stats
  
+def build_camp_names_from_stats(all_stats):
+    """Собираем мапу {advertId(str): name} из ответа fullstats.
+    Если в одной кампании name пустое — берём из следующей встречи того же ID."""
+    camp_names = {}
+    for camp in all_stats:
+        adv_id = camp.get('advertId')
+        if adv_id is None:
+            continue
+        key = str(adv_id)
+        name = camp.get('name') or camp.get('advertName') or ''
+        # перезаписываем только если ещё нет ИЛИ текущее значение пустое
+        if name and (key not in camp_names or not camp_names[key]):
+            camp_names[key] = name
+    log.info(f'Собрано названий кампаний из fullstats: {len(camp_names)}')
+    return camp_names
+ 
 def write_rk_from_stats(all_stats, date_from, date_to, ss, sheet_name, camp_names=None):
     """Записываем РК период из уже загруженной статистики, фильтруя по датам.
     Колонка «Кампания» подтягивается из camp_names (по advertId)."""
@@ -140,8 +132,6 @@ def write_rk_from_stats(all_stats, date_from, date_to, ss, sheet_name, camp_name
     dt_from = datetime.strptime(date_from, '%Y-%m-%d')
     dt_to = datetime.strptime(date_to, '%Y-%m-%d')
  
-    # Ключ группировки: (nmId, advertId) — одна и та же карточка в разных РК даст разные строки.
-    # Если хочешь группировку только по nmId — спроси, переделаю.
     nm_stats = {}
     for camp in all_stats:
         camp_id = str(camp.get('advertId', ''))
@@ -190,23 +180,21 @@ def write_rk_from_stats(all_stats, date_from, date_to, ss, sheet_name, camp_name
         data_rows.append([nm['nmId'], nm['name'], camp_name, nm['views'], nm['clicks'],
             ctr, cpc, nm['sum'], nm['orders'], nm['orderSum'], drr, ''])
  
-    # Сортируем ТОЛЬКО данные по расходу (теперь индекс 7 — Расход ₽)
+    # Сортируем ТОЛЬКО данные по расходу (индекс 7 — Расход ₽)
     data_rows.sort(key=lambda x: x[7] if isinstance(x[7], (int, float)) else 0, reverse=True)
  
     rows = [header] + data_rows
     write_sheet(ss, sheet_name, rows)
     update_timestamp(ss, sheet_name, f'✅ Готово — {len(nm_stats)} строк')
  
-def load_ads(api_key, date_from, date_to, ss, camp_names=None):
-    """camp_names — словарь {advertId(str): name}. Если None — будет пусто."""
-    if camp_names is None:
-        camp_names = {}
+def load_ads(api_key, date_from, date_to, ss):
+    """Загружаем рекламу. Названия кампаний берём из самого ответа fullstats."""
     log.info('Загружаем рекламу...')
     update_timestamp(ss, 'Реклама', '🔄 Загружается...')
     all_ids = get_campaign_ids(api_key)
     if not all_ids:
         update_timestamp(ss, 'Реклама', '❌ Нет кампаний')
-        return
+        return {}
     log.info(f'Кампаний: {len(all_ids)}')
     all_stats = []
     for i in range(0, len(all_ids), 50):
@@ -220,7 +208,7 @@ def load_ads(api_key, date_from, date_to, ss, camp_names=None):
         time.sleep(22)
     if not all_stats:
         update_timestamp(ss, 'Реклама', '❌ Нет данных')
-        return
+        return {}
     rows = [['ID', 'Название', 'Показы', 'Клики', 'CTR', 'CPC', 'Расход', 'Заказы', 'Сумма заказов', 'ДРР']]
     for camp in all_stats:
         views = sum(day.get('views', 0) for day in camp.get('days', []))
@@ -232,10 +220,14 @@ def load_ads(api_key, date_from, date_to, ss, camp_names=None):
         cpc = round(spend / clicks, 2) if clicks > 0 else 0
         drr = round(spend / order_sum * 100, 1) if order_sum > 0 else 0
         camp_id = str(camp.get('advertId', ''))
-        rows.append([camp_id, camp_names.get(camp_id, ''),
+        # Название кампании теперь берём прямо из ответа API
+        camp_name = camp.get('name') or camp.get('advertName') or ''
+        rows.append([camp_id, camp_name,
             views, clicks, ctr, cpc, spend, orders, order_sum, drr])
     write_sheet(ss, 'Реклама', rows)
     update_timestamp(ss, 'Реклама', f'✅ Готово — {len(all_stats)} кампаний')
+    # Возвращаем названия — пригодится если в main2 они нужны для каких-то расчётов
+    return build_camp_names_from_stats(all_stats)
  
 def load_funnel_period(api_key, date_from, date_to, ss, sheet_name):
     log.info(f'Загружаем {sheet_name}...')
@@ -332,19 +324,16 @@ if __name__ == '__main__':
     days14_to   = (today - timedelta(days=8)).strftime('%Y-%m-%d')
     month_from  = today.replace(day=1).strftime('%Y-%m-%d')
  
-    # 1. Получаем актуальные названия кампаний из WB API ОДИН РАЗ
-    all_ids = get_campaign_ids(api_key)
-    camp_names = get_campaign_names(api_key, all_ids) if all_ids else {}
-    time.sleep(5)
- 
-    # 2. Реклама (с правильными названиями из API)
-    load_ads(api_key, date_from, date_to, ss, camp_names)
+    # 1. Реклама (названия берём прямо из ответа fullstats)
+    load_ads(api_key, date_from, date_to, ss)
     time.sleep(10)
  
-    # 3. Загружаем все РК за месяц ОДИН РАЗ
+    # 2. Загружаем все РК за месяц ОДИН РАЗ и собираем названия из ответа
     log.info('Загружаем все РК периоды за один проход...')
+    all_ids = get_campaign_ids(api_key)
     if all_ids:
         month_stats = get_all_rk_stats(api_key, all_ids, month_from, yesterday)
+        camp_names = build_camp_names_from_stats(month_stats)
         time.sleep(10)
         write_rk_from_stats(month_stats, yesterday, yesterday, ss, 'РК День', camp_names)
         time.sleep(5)
@@ -356,7 +345,7 @@ if __name__ == '__main__':
  
     time.sleep(10)
  
-    # 4. Воронки периодов
+    # 3. Воронки периодов
     load_funnel_period(api_key, yesterday, yesterday, ss, 'Воронка День')
     time.sleep(10)
     load_funnel_period(api_key, week_from, yesterday, ss, 'Воронка Неделя')
@@ -367,3 +356,4 @@ if __name__ == '__main__':
  
     update_timestamp(ss, 'Все данные', f'✅ Всё завершено — {datetime.now().strftime("%d.%m.%Y %H:%M")}')
     log.info(f'main2 завершён: {datetime.now()}')
+ 
