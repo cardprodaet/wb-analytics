@@ -1,6 +1,3 @@
-
-Copy
-
 import requests
 import gspread
 import time
