@@ -356,4 +356,124 @@ if __name__ == '__main__':
  
     update_timestamp(ss, 'Все данные', f'✅ Всё завершено — {datetime.now().strftime("%d.%m.%Y %H:%M")}')
     log.info(f'main2 завершён: {datetime.now()}')
+ """
+Отладочный скрипт: смотрим что реально возвращает WB API в /fullstats
+и где (если вообще) лежит название кампании.
  
+Запуск: python3 debug_camp_names.py
+"""
+import requests
+import gspread
+import json
+import logging
+from datetime import datetime, timedelta
+from google.oauth2.service_account import Credentials
+ 
+logging.basicConfig(level=logging.INFO, format='%(asctime)s — %(message)s')
+log = logging.getLogger(__name__)
+ 
+SPREADSHEET_ID = '1a05NKURoAiCvKhM7t0jLmcAe0pc-kGQA329DiggH5_s'
+CREDENTIALS_FILE = 'credentials.json'
+SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+ 
+def get_api_key():
+    creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
+    client = gspread.authorize(creds)
+    ss = client.open_by_key(SPREADSHEET_ID)
+    return ss.worksheet('Настройки').acell('B2').value.strip()
+ 
+def main():
+    api_key = get_api_key()
+    headers = {'Authorization': api_key}
+ 
+    # 1. Получаем список кампаний
+    log.info('=' * 60)
+    log.info('ШАГ 1: Получаем список кампаний (/adv/v1/promotion/count)')
+    log.info('=' * 60)
+    r = requests.get('https://advert-api.wildberries.ru/adv/v1/promotion/count', headers=headers, timeout=30)
+    log.info(f'Статус: {r.status_code}')
+    if r.status_code != 200:
+        log.error(f'Ошибка: {r.text[:500]}')
+        return
+    data = r.json()
+    log.info(f'Структура верхнего уровня: {list(data.keys())}')
+ 
+    # Покажем первый блок adverts целиком
+    adverts = data.get('adverts', [])
+    if adverts:
+        log.info(f'Количество групп adverts: {len(adverts)}')
+        first_group = adverts[0]
+        log.info(f'Поля первой группы: {list(first_group.keys())}')
+        log.info(f'ПЕРВАЯ ГРУППА ПОЛНОСТЬЮ (первый элемент advert_list):')
+        adv_list = first_group.get('advert_list', [])
+        if adv_list:
+            log.info(json.dumps(adv_list[0], ensure_ascii=False, indent=2))
+            log.info(f'==> Поля одной кампании из /count: {list(adv_list[0].keys())}')
+ 
+    # Соберём первые 3 ID для теста
+    test_ids = []
+    for item in adverts:
+        for adv in item.get('advert_list', []):
+            test_ids.append(adv.get('advertId'))
+            if len(test_ids) >= 3:
+                break
+        if len(test_ids) >= 3:
+            break
+    log.info(f'Тестовые ID для fullstats: {test_ids}')
+ 
+    if not test_ids:
+        log.error('Не удалось получить тестовые ID')
+        return
+ 
+    # 2. Запрашиваем fullstats по этим 3 ID
+    today = datetime.now()
+    date_from = (today - timedelta(days=7)).strftime('%Y-%m-%d')
+    date_to = (today - timedelta(days=1)).strftime('%Y-%m-%d')
+ 
+    log.info('')
+    log.info('=' * 60)
+    log.info(f'ШАГ 2: fullstats для 3 кампаний за {date_from} — {date_to}')
+    log.info('=' * 60)
+    url = f'https://advert-api.wildberries.ru/adv/v3/fullstats?ids={",".join(map(str, test_ids))}&beginDate={date_from}&endDate={date_to}'
+    r = requests.get(url, headers=headers, timeout=30)
+    log.info(f'Статус: {r.status_code}')
+    if r.status_code != 200:
+        log.error(f'Ошибка: {r.text[:500]}')
+        return
+    stats = r.json()
+    log.info(f'Получено объектов: {len(stats)}')
+ 
+    if stats:
+        first = stats[0]
+        log.info(f'==> Поля одной кампании из /fullstats: {list(first.keys())}')
+        log.info(f'==> advertId: {first.get("advertId")}')
+        log.info(f'==> name: {repr(first.get("name"))}')
+        log.info(f'==> advertName: {repr(first.get("advertName"))}')
+        log.info(f'')
+        log.info(f'ПЕРВАЯ КАМПАНИЯ ЦЕЛИКОМ (без поля days):')
+        first_copy = {k: v for k, v in first.items() if k != 'days'}
+        log.info(json.dumps(first_copy, ensure_ascii=False, indent=2))
+ 
+    # 3. Пробуем POST /adv/v1/promotion/adverts с разными вариантами body
+    log.info('')
+    log.info('=' * 60)
+    log.info('ШАГ 3: Пробуем POST /adv/v1/promotion/adverts')
+    log.info('=' * 60)
+    url2 = 'https://advert-api.wildberries.ru/adv/v1/promotion/adverts'
+    headers_post = {**headers, 'Content-Type': 'application/json'}
+ 
+    # Вариант А: body = массив ID
+    log.info('--- Вариант А: body = массив [id1, id2, id3] ---')
+    r = requests.post(url2, headers=headers_post, json=test_ids, timeout=30)
+    log.info(f'Статус: {r.status_code} | Ответ: {r.text[:300]}')
+ 
+    # Вариант Б: body = объект с полем "id"
+    log.info('--- Вариант Б: body = {"id": [...]} ---')
+    r = requests.post(url2, headers=headers_post, json={'id': test_ids}, timeout=30)
+    log.info(f'Статус: {r.status_code} | Ответ: {r.text[:300]}')
+ 
+    log.info('')
+    log.info('ГОТОВО. Смотри выше — где лежит название кампании.')
+ 
+if __name__ == '__main__':
+    main()
