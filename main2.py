@@ -118,16 +118,6 @@ def wb_request(
 
 # ── Утилиты ────────────────────────────────────────────────────────────────────
 
-def date_range(date_from: str, date_to: str) -> list[str]:
-    fmt, out = '%Y-%m-%d', []
-    cur = datetime.strptime(date_from, fmt)
-    end = datetime.strptime(date_to,   fmt)
-    while cur <= end:
-        out.append(cur.strftime(fmt))
-        cur += timedelta(days=1)
-    return out
-
-
 def safe_div(num: float, den: float, scale: float = 1, decimals: int = 2) -> float:
     return round(num / den * scale, decimals) if den else 0.0
 
@@ -176,14 +166,13 @@ def fetch_fullstats(
     date_from:    str,
     date_to:      str,
 ) -> list[dict]:
-    dates     = date_range(date_from, date_to)
-    url       = f'{ADV_BASE}/adv/v2/fullstats'
     all_stats: list[dict] = []
 
     for i in range(0, len(campaign_ids), CAMP_CHUNK):
         chunk   = campaign_ids[i : i + CAMP_CHUNK]
-        payload = [{'id': cid, 'dates': dates} for cid in chunk]
-        resp    = wb_request('post', url, api_key, json=payload)
+        ids_str = ','.join(map(str, chunk))
+        url     = f'{ADV_BASE}/adv/v3/fullstats?ids={ids_str}&beginDate={date_from}&endDate={date_to}'
+        resp    = wb_request('get', url, api_key)
         if resp:
             data = resp.json()
             if isinstance(data, list):
