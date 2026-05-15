@@ -27,7 +27,7 @@ ADV_BASE       = 'https://advert-api.wildberries.ru'
 ANALYTICS_BASE = 'https://seller-analytics-api.wildberries.ru'
 
 CAMP_CHUNK  = 50
-ADV_SLEEP   = 22
+ADV_SLEEP   = 65
 PAGE_SLEEP  = 20
 WRITE_BATCH = 500
 
