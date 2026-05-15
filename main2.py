@@ -1,7 +1,7 @@
 #!/usr/bin/env python3
 """
 WB Analytics — main2.py
-Реклама (РК по периодам) + Воронка по периодам.
+РК по периодам + Воронка по периодам.
 """
 
 from __future__ import annotations
@@ -27,8 +27,8 @@ ADV_BASE       = 'https://advert-api.wildberries.ru'
 ANALYTICS_BASE = 'https://seller-analytics-api.wildberries.ru'
 
 CAMP_CHUNK  = 50
-ADV_SLEEP   = 22   # между пакетами fullstats
-PAGE_SLEEP  = 20   # между страницами воронки
+ADV_SLEEP   = 22
+PAGE_SLEEP  = 20
 WRITE_BATCH = 500
 
 # ── Логирование ────────────────────────────────────────────────────────────────
@@ -51,11 +51,6 @@ def get_api_key(ss: gspread.Spreadsheet) -> str:
     return ss.worksheet('Настройки').acell('B2').value.strip()
 
 
-def get_dates(ss: gspread.Spreadsheet) -> tuple[str, str]:
-    ws = ss.worksheet('Настройки')
-    return ws.acell('B3').value, ws.acell('B4').value
-
-
 def set_status(ss: gspread.Spreadsheet, name: str, status: str) -> None:
     try:
         now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
@@ -69,7 +64,6 @@ def set_status(ss: gspread.Spreadsheet, name: str, status: str) -> None:
 
 
 def write_sheet(ss: gspread.Spreadsheet, name: str, rows: list[list]) -> None:
-    """Записывает rows в лист. Пробрасывает исключение при ошибке."""
     ws = ss.worksheet(name)
     ws.clear()
     time.sleep(2)
@@ -107,7 +101,7 @@ def wb_request(
                 return None
 
             if resp.status_code == 429:
-                wait = 60 * attempt  # экспоненциальный: 60, 120, 180...
+                wait = 60 * attempt
                 log.warning('429 rate limit (attempt %d/%d) — sleeping %ds', attempt, max_retries, wait)
                 time.sleep(wait)
                 continue
@@ -125,7 +119,6 @@ def wb_request(
 # ── Утилиты ────────────────────────────────────────────────────────────────────
 
 def date_range(date_from: str, date_to: str) -> list[str]:
-    """Список дат [date_from .. date_to] включительно."""
     fmt, out = '%Y-%m-%d', []
     cur = datetime.strptime(date_from, fmt)
     end = datetime.strptime(date_to,   fmt)
@@ -141,10 +134,6 @@ def safe_div(num: float, den: float, scale: float = 1, decimals: int = 2) -> flo
 # ── Кампании ───────────────────────────────────────────────────────────────────
 
 def get_campaigns(api_key: str) -> tuple[list[int], dict[int, str]]:
-    """
-    Возвращает (список ID кампаний, словарь {id: название}).
-    Исключает удалённые (status == -1).
-    """
     resp = wb_request('get', f'{ADV_BASE}/adv/v1/promotion/count', api_key)
     if not resp:
         return [], {}
@@ -163,7 +152,6 @@ def get_campaigns(api_key: str) -> tuple[list[int], dict[int, str]]:
 
 
 def _fetch_campaign_names(api_key: str, campaign_ids: list[int]) -> dict[int, str]:
-    """Получает названия кампаний через отдельный endpoint."""
     id_to_name: dict[int, str] = {}
     for i in range(0, len(campaign_ids), CAMP_CHUNK):
         chunk   = campaign_ids[i : i + CAMP_CHUNK]
@@ -188,7 +176,6 @@ def fetch_fullstats(
     date_from:    str,
     date_to:      str,
 ) -> list[dict]:
-    """POST /adv/v2/fullstats — единственный корректный endpoint."""
     dates     = date_range(date_from, date_to)
     url       = f'{ADV_BASE}/adv/v2/fullstats'
     all_stats: list[dict] = []
@@ -209,57 +196,6 @@ def fetch_fullstats(
 
 # ── Загрузчики ─────────────────────────────────────────────────────────────────
 
-def load_ads(
-    api_key:  str,
-    date_from: str,
-    date_to:   str,
-    ss:        gspread.Spreadsheet,
-) -> tuple[list[int], dict[int, str], list[dict]]:
-    """
-    Загружает сводную рекламу и возвращает (ids, id_to_name, raw_stats)
-    для повторного использования в load_rk_periods.
-    """
-    log.info('load_ads: %s → %s', date_from, date_to)
-    set_status(ss, 'Реклама', '🔄 Загружается...')
-
-    campaign_ids, id_to_name = get_campaigns(api_key)
-    if not campaign_ids:
-        set_status(ss, 'Реклама', '❌ Нет кампаний')
-        return [], {}, []
-
-    raw = fetch_fullstats(api_key, campaign_ids, date_from, date_to)
-    if not raw:
-        set_status(ss, 'Реклама', '❌ Нет данных')
-        return campaign_ids, id_to_name, []
-
-    headers = ['ID кампании', 'Название', 'Показы', 'Клики',
-               'CTR, %', 'CPC, ₽', 'Расход, ₽', 'Заказы', 'Сумма заказов, ₽', 'ДРР, %']
-    rows: list[list] = [headers]
-
-    for camp in raw:
-        adv_id = camp.get('advertId', '')
-        name   = id_to_name.get(int(adv_id), '—') if adv_id else '—'
-        views = clicks = spend = orders = order_sum = 0
-        for day in camp.get('days', []):
-            views     += day.get('views',     0)
-            clicks    += day.get('clicks',    0)
-            spend     += day.get('sum',       0)
-            orders    += day.get('orders',    0)
-            order_sum += day.get('sum_price', 0)
-        rows.append([
-            adv_id, name, views, clicks,
-            safe_div(clicks, views, scale=100),
-            safe_div(spend, clicks),
-            spend, orders, order_sum,
-            safe_div(spend, order_sum, scale=100, decimals=1),
-        ])
-
-    rows[1:] = sorted(rows[1:], key=lambda r: r[6], reverse=True)
-    write_sheet(ss, 'Реклама', rows)
-    set_status(ss, 'Реклама', f'✅ Готово — {len(raw)} кампаний')
-    return campaign_ids, id_to_name, raw
-
-
 def write_rk_period(
     month_stats: list[dict],
     id_to_name:  dict[int, str],
@@ -268,10 +204,6 @@ def write_rk_period(
     ss:          gspread.Spreadsheet,
     sheet_name:  str,
 ) -> None:
-    """
-    Фильтрует month_stats по диапазону дат и записывает РК-лист.
-    Один вызов fetch_fullstats на месяц покрывает все периоды.
-    """
     log.info('write_rk_period [%s]: %s → %s', sheet_name, date_from, date_to)
     set_status(ss, sheet_name, '🔄 Записываем...')
 
@@ -374,7 +306,7 @@ def load_funnel_period(
             break
         offset += limit
         page   += 1
-        time.sleep(PAGE_SLEEP)  # 20s достаточно, было 60s
+        time.sleep(PAGE_SLEEP)
 
     if not all_products:
         set_status(ss, sheet_name, '❌ Нет данных')
@@ -440,7 +372,6 @@ def main() -> None:
     log.info('=== main2 started ===')
     ss      = get_spreadsheet()
     api_key = get_api_key(ss)
-    date_from, date_to = get_dates(ss)
 
     today       = datetime.now()
     yesterday   = (today - timedelta(days=1)).strftime('%Y-%m-%d')
@@ -448,13 +379,10 @@ def main() -> None:
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
     month_from  = today.replace(day=1).strftime('%Y-%m-%d')
 
-    # Загружаем рекламу за основной период + получаем ids и names
-    campaign_ids, id_to_name, _ = load_ads(api_key, date_from, date_to, ss)
-    time.sleep(10)
-
-    # Один запрос fullstats за месяц — фильтруем локально для каждого периода.
-    # Это экономит API-вызовы: 1 запрос вместо 4.
-    if campaign_ids:
+    campaign_ids, id_to_name = get_campaigns(api_key)
+    if not campaign_ids:
+        log.warning('Нет кампаний — РК периоды пропущены')
+    else:
         log.info('Fetching month stats for all RK periods...')
         month_stats = fetch_fullstats(api_key, campaign_ids, month_from, yesterday)
         time.sleep(5)
