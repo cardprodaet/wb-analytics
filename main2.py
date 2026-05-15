@@ -137,8 +137,7 @@ def get_campaigns(api_key: str) -> tuple[list[int], dict[int, str]]:
     ]
     log.info('Campaigns found: %d', len(all_ids))
 
-    id_to_name = _fetch_campaign_names(api_key, all_ids)
-    return all_ids, id_to_name
+    return all_ids, {}
 
 
 def _fetch_campaign_names(api_key: str, campaign_ids: list[int]) -> dict[int, str]:
