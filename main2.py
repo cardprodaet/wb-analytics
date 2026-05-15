@@ -1,235 +1,366 @@
-import requests
-import gspread
-import time
+#!/usr/bin/env python3
+"""
+WB Analytics — main2.py
+Реклама (РК по периодам) + Воронка по периодам.
+"""
+
+from __future__ import annotations
+
 import logging
+import time
 from datetime import datetime, timedelta
+
+import gspread
+import requests
 from google.oauth2.service_account import Credentials
 
-logging.basicConfig(level=logging.INFO, format='%(asctime)s — %(levelname)s — %(message)s')
+# ── Конфигурация ───────────────────────────────────────────────────────────────
+
+SPREADSHEET_ID   = '1a05NKURoAiCvKhM7t0jLmcAe0pc-kGQA329DiggH5_s'
+CREDENTIALS_FILE = 'credentials.json'
+SCOPES = [
+    'https://www.googleapis.com/auth/spreadsheets',
+    'https://www.googleapis.com/auth/drive',
+]
+
+ADV_BASE       = 'https://advert-api.wildberries.ru'
+ANALYTICS_BASE = 'https://seller-analytics-api.wildberries.ru'
+
+CAMP_CHUNK  = 50
+ADV_SLEEP   = 22   # между пакетами fullstats
+PAGE_SLEEP  = 20   # между страницами воронки
+WRITE_BATCH = 500
+
+# ── Логирование ────────────────────────────────────────────────────────────────
+
+logging.basicConfig(
+    level=logging.INFO,
+    format='%(asctime)s  %(levelname)-8s  %(message)s',
+    datefmt='%H:%M:%S',
+)
 log = logging.getLogger(__name__)
 
-SPREADSHEET_ID = '1a05NKURoAiCvKhM7t0jLmcAe0pc-kGQA329DiggH5_s'
-CREDENTIALS_FILE = 'credentials.json'
-SCOPES = ['https://www.googleapis.com/auth/spreadsheets', 'https://www.googleapis.com/auth/drive']
+# ── Google Sheets ──────────────────────────────────────────────────────────────
 
-def get_client():
+def get_spreadsheet() -> gspread.Spreadsheet:
     creds = Credentials.from_service_account_file(CREDENTIALS_FILE, scopes=SCOPES)
-    return gspread.authorize(creds)
+    return gspread.authorize(creds).open_by_key(SPREADSHEET_ID)
 
-def get_spreadsheet():
-    return get_client().open_by_key(SPREADSHEET_ID)
 
-def get_api_key(ss):
+def get_api_key(ss: gspread.Spreadsheet) -> str:
     return ss.worksheet('Настройки').acell('B2').value.strip()
 
-def get_dates(ss):
-    sheet = ss.worksheet('Настройки')
-    return sheet.acell('B3').value, sheet.acell('B4').value
 
-def update_timestamp(ss, name, status):
+def get_dates(ss: gspread.Spreadsheet) -> tuple[str, str]:
+    ws = ss.worksheet('Настройки')
+    return ws.acell('B3').value, ws.acell('B4').value
+
+
+def set_status(ss: gspread.Spreadsheet, name: str, status: str) -> None:
     try:
-        sheet = ss.worksheet('Настройки')
         now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
-        sheet.update(values=[['Последнее обновление:', name, now, status]], range_name='D2')
-        log.info(f'Индикатор: {name} — {status}')
-    except Exception as e:
-        log.error(f'Ошибка индикатора: {e}')
+        ss.worksheet('Настройки').update(
+            values=[['Последнее обновление:', name, now, status]],
+            range_name='D2',
+        )
+        log.info('%s — %s', name, status)
+    except Exception as exc:
+        log.warning('set_status error: %s', exc)
 
-def wb_request(method, url, api_key, max_retries=5, **kwargs):
+
+def write_sheet(ss: gspread.Spreadsheet, name: str, rows: list[list]) -> None:
+    """Записывает rows в лист. Пробрасывает исключение при ошибке."""
+    ws = ss.worksheet(name)
+    ws.clear()
+    time.sleep(2)
+    for i in range(0, len(rows), WRITE_BATCH):
+        chunk = rows[i : i + WRITE_BATCH]
+        if i == 0:
+            ws.update(values=chunk, range_name='A1')
+        else:
+            ws.append_rows(chunk)
+        time.sleep(2)
+    log.info('%s → %d rows written', name, len(rows) - 1)
+
+# ── HTTP ───────────────────────────────────────────────────────────────────────
+
+def wb_request(
+    method:      str,
+    url:         str,
+    api_key:     str,
+    max_retries: int = 5,
+    **kwargs,
+) -> requests.Response | None:
     headers = {'Authorization': api_key}
     if 'json' in kwargs:
         headers['Content-Type'] = 'application/json'
-    for attempt in range(max_retries):
+
+    for attempt in range(1, max_retries + 1):
         try:
             resp = getattr(requests, method)(url, headers=headers, timeout=30, **kwargs)
-            if resp.status_code == 429:
-                wait = 30 * (attempt + 1)
-                log.warning(f'Лимит 429 — ждем {wait} сек...')
-                time.sleep(wait)
-                continue
+
             if resp.status_code == 200:
                 return resp
+
             if resp.status_code == 404:
-                log.error(f'404 Not Found: {url[:120]} — ретраи отключены')
+                log.error('404 Not Found: %s', url[:120])
                 return None
-            log.error(f'Ошибка {resp.status_code}: {resp.text[:200]}')
+
+            if resp.status_code == 429:
+                wait = 60 * attempt  # экспоненциальный: 60, 120, 180...
+                log.warning('429 rate limit (attempt %d/%d) — sleeping %ds', attempt, max_retries, wait)
+                time.sleep(wait)
+                continue
+
+            log.error('HTTP %d: %s', resp.status_code, resp.text[:300])
             time.sleep(30)
-        except Exception as e:
-            log.error(f'Запрос упал: {e}')
+
+        except requests.RequestException as exc:
+            log.error('Request error (attempt %d/%d): %s', attempt, max_retries, exc)
             time.sleep(30)
+
+    log.error('All retries exhausted for %s', url)
     return None
 
-def write_sheet(ss, name, rows):
-    try:
-        sheet = ss.worksheet(name)
-        sheet.clear()
-        time.sleep(3)
-        for i in range(0, len(rows), 500):
-            chunk = rows[i:i+500]
-            if i == 0:
-                sheet.update(values=chunk, range_name='A1')
-            else:
-                sheet.append_rows(chunk)
-            time.sleep(2)
-        log.info(f'{name}: записано {len(rows)-1} строк')
-    except Exception as e:
-        log.error(f'Ошибка записи в {name}: {e}')
+# ── Утилиты ────────────────────────────────────────────────────────────────────
 
-def get_campaign_ids(api_key):
-    url = 'https://advert-api.wildberries.ru/adv/v1/promotion/count'
-    resp = wb_request('get', url, api_key)
+def date_range(date_from: str, date_to: str) -> list[str]:
+    """Список дат [date_from .. date_to] включительно."""
+    fmt, out = '%Y-%m-%d', []
+    cur = datetime.strptime(date_from, fmt)
+    end = datetime.strptime(date_to,   fmt)
+    while cur <= end:
+        out.append(cur.strftime(fmt))
+        cur += timedelta(days=1)
+    return out
+
+
+def safe_div(num: float, den: float, scale: float = 1, decimals: int = 2) -> float:
+    return round(num / den * scale, decimals) if den else 0.0
+
+# ── Кампании ───────────────────────────────────────────────────────────────────
+
+def get_campaigns(api_key: str) -> tuple[list[int], dict[int, str]]:
+    """
+    Возвращает (список ID кампаний, словарь {id: название}).
+    Исключает удалённые (status == -1).
+    """
+    resp = wb_request('get', f'{ADV_BASE}/adv/v1/promotion/count', api_key)
     if not resp:
-        return []
-    all_ids = []
-    for item in resp.json().get('adverts', []):
-        for advert in item.get('advert_list', []):
-            all_ids.append(advert.get('advertId'))
-    return all_ids
+        return [], {}
 
-def get_all_rk_stats(api_key, all_ids, date_from, date_to):
-    all_stats = []
-    log.info(f'Загружаем статистику {len(all_ids)} кампаний за {date_from} — {date_to}')
-    for i in range(0, len(all_ids), 50):
-        chunk = all_ids[i:i+50]
-        url = f'https://advert-api.wildberries.ru/adv/v3/fullstats?ids={",".join(map(str, chunk))}&beginDate={date_from}&endDate={date_to}'
-        resp = wb_request('get', url, api_key)
+    all_ids: list[int] = [
+        int(advert['advertId'])
+        for group  in resp.json().get('adverts', [])
+        if group.get('status') != -1
+        for advert in group.get('advert_list', [])
+        if advert.get('advertId')
+    ]
+    log.info('Campaigns found: %d', len(all_ids))
+
+    id_to_name = _fetch_campaign_names(api_key, all_ids)
+    return all_ids, id_to_name
+
+
+def _fetch_campaign_names(api_key: str, campaign_ids: list[int]) -> dict[int, str]:
+    """Получает названия кампаний через отдельный endpoint."""
+    id_to_name: dict[int, str] = {}
+    for i in range(0, len(campaign_ids), CAMP_CHUNK):
+        chunk   = campaign_ids[i : i + CAMP_CHUNK]
+        ids_str = ','.join(map(str, chunk))
+        resp    = wb_request('get', f'{ADV_BASE}/adv/v1/promotion/adverts?id={ids_str}', api_key)
         if resp:
             data = resp.json()
-            if data:
+            if isinstance(data, list):
+                for adv in data:
+                    adv_id = adv.get('advertId') or adv.get('id')
+                    name   = adv.get('name') or adv.get('campaignName') or '—'
+                    if adv_id:
+                        id_to_name[int(adv_id)] = name
+        time.sleep(1)
+    return id_to_name
+
+# ── Рекламная статистика ───────────────────────────────────────────────────────
+
+def fetch_fullstats(
+    api_key:      str,
+    campaign_ids: list[int],
+    date_from:    str,
+    date_to:      str,
+) -> list[dict]:
+    """POST /adv/v2/fullstats — единственный корректный endpoint."""
+    dates     = date_range(date_from, date_to)
+    url       = f'{ADV_BASE}/adv/v2/fullstats'
+    all_stats: list[dict] = []
+
+    for i in range(0, len(campaign_ids), CAMP_CHUNK):
+        chunk   = campaign_ids[i : i + CAMP_CHUNK]
+        payload = [{'id': cid, 'dates': dates} for cid in chunk]
+        resp    = wb_request('post', url, api_key, json=payload)
+        if resp:
+            data = resp.json()
+            if isinstance(data, list):
                 all_stats.extend(data)
-        time.sleep(22)
-        if (i // 50 + 1) % 10 == 0:
-            log.info(f'Прогресс: {i+50}/{len(all_ids)} кампаний')
+        if i + CAMP_CHUNK < len(campaign_ids):
+            time.sleep(ADV_SLEEP)
+
+    log.info('Fullstats: %d campaign records', len(all_stats))
     return all_stats
 
-def build_camp_names_from_stats(all_stats):
-    camp_names = {}
-    for camp in all_stats:
-        adv_id = camp.get('advertId')
-        if adv_id is None:
-            continue
-        key = str(adv_id)
-        name = camp.get('name') or camp.get('advertName') or ''
-        if name and (key not in camp_names or not camp_names[key]):
-            camp_names[key] = name
-    log.info(f'Собрано названий кампаний из fullstats: {len(camp_names)}')
-    return camp_names
+# ── Загрузчики ─────────────────────────────────────────────────────────────────
 
-def write_rk_from_stats(all_stats, date_from, date_to, ss, sheet_name, camp_names=None):
-    if camp_names is None:
-        camp_names = {}
-    log.info(f'Записываем {sheet_name} за {date_from} — {date_to}')
-    update_timestamp(ss, sheet_name, '🔄 Записываем...')
+def load_ads(
+    api_key:  str,
+    date_from: str,
+    date_to:   str,
+    ss:        gspread.Spreadsheet,
+) -> tuple[list[int], dict[int, str], list[dict]]:
+    """
+    Загружает сводную рекламу и возвращает (ids, id_to_name, raw_stats)
+    для повторного использования в load_rk_periods.
+    """
+    log.info('load_ads: %s → %s', date_from, date_to)
+    set_status(ss, 'Реклама', '🔄 Загружается...')
+
+    campaign_ids, id_to_name = get_campaigns(api_key)
+    if not campaign_ids:
+        set_status(ss, 'Реклама', '❌ Нет кампаний')
+        return [], {}, []
+
+    raw = fetch_fullstats(api_key, campaign_ids, date_from, date_to)
+    if not raw:
+        set_status(ss, 'Реклама', '❌ Нет данных')
+        return campaign_ids, id_to_name, []
+
+    headers = ['ID кампании', 'Название', 'Показы', 'Клики',
+               'CTR, %', 'CPC, ₽', 'Расход, ₽', 'Заказы', 'Сумма заказов, ₽', 'ДРР, %']
+    rows: list[list] = [headers]
+
+    for camp in raw:
+        adv_id = camp.get('advertId', '')
+        name   = id_to_name.get(int(adv_id), '—') if adv_id else '—'
+        views = clicks = spend = orders = order_sum = 0
+        for day in camp.get('days', []):
+            views     += day.get('views',     0)
+            clicks    += day.get('clicks',    0)
+            spend     += day.get('sum',       0)
+            orders    += day.get('orders',    0)
+            order_sum += day.get('sum_price', 0)
+        rows.append([
+            adv_id, name, views, clicks,
+            safe_div(clicks, views, scale=100),
+            safe_div(spend, clicks),
+            spend, orders, order_sum,
+            safe_div(spend, order_sum, scale=100, decimals=1),
+        ])
+
+    rows[1:] = sorted(rows[1:], key=lambda r: r[6], reverse=True)
+    write_sheet(ss, 'Реклама', rows)
+    set_status(ss, 'Реклама', f'✅ Готово — {len(raw)} кампаний')
+    return campaign_ids, id_to_name, raw
+
+
+def write_rk_period(
+    month_stats: list[dict],
+    id_to_name:  dict[int, str],
+    date_from:   str,
+    date_to:     str,
+    ss:          gspread.Spreadsheet,
+    sheet_name:  str,
+) -> None:
+    """
+    Фильтрует month_stats по диапазону дат и записывает РК-лист.
+    Один вызов fetch_fullstats на месяц покрывает все периоды.
+    """
+    log.info('write_rk_period [%s]: %s → %s', sheet_name, date_from, date_to)
+    set_status(ss, sheet_name, '🔄 Записываем...')
 
     dt_from = datetime.strptime(date_from, '%Y-%m-%d')
-    dt_to = datetime.strptime(date_to, '%Y-%m-%d')
+    dt_to   = datetime.strptime(date_to,   '%Y-%m-%d')
 
-    nm_stats = {}
-    for camp in all_stats:
-        camp_id = str(camp.get('advertId', ''))
+    nm_stats: dict[tuple, dict] = {}
+    for camp in month_stats:
+        adv_id    = camp.get('advertId')
+        camp_name = id_to_name.get(int(adv_id), '—') if adv_id else '—'
+
         for day in camp.get('days', []):
-            day_date_str = day.get('date', '')[:10]
-            if not day_date_str:
+            day_str = (day.get('date') or '')[:10]
+            if not day_str:
                 continue
             try:
-                day_date = datetime.strptime(day_date_str, '%Y-%m-%d')
+                day_dt = datetime.strptime(day_str, '%Y-%m-%d')
             except ValueError:
                 continue
-            if not (dt_from <= day_date <= dt_to):
+            if not (dt_from <= day_dt <= dt_to):
                 continue
+
             for app in day.get('apps', []):
                 for nm in app.get('nms', []):
-                    key = (str(nm.get('nmId')), camp_id)
+                    nm_id = nm.get('nmId')
+                    if not nm_id:
+                        continue
+                    key = (nm_id, str(adv_id))
                     if key not in nm_stats:
                         nm_stats[key] = {
-                            'nmId': nm.get('nmId'),
-                            'name': nm.get('name', ''),
-                            'campId': camp_id,
-                            'views': 0, 'clicks': 0,
-                            'sum': 0, 'orders': 0, 'orderSum': 0
+                            'nmId':     nm_id,
+                            'name':     nm.get('name', '—'),
+                            'campName': camp_name,
+                            'views':    0, 'clicks':   0,
+                            'sum':      0, 'orders':   0, 'orderSum': 0,
                         }
-                    nm_stats[key]['views']    += nm.get('views', 0)
-                    nm_stats[key]['clicks']   += nm.get('clicks', 0)
-                    nm_stats[key]['sum']      += nm.get('sum', 0)
-                    nm_stats[key]['orders']   += nm.get('orders', 0)
-                    nm_stats[key]['orderSum'] += nm.get('sum_price', 0)
+                    s = nm_stats[key]
+                    s['views']    += nm.get('views',     0)
+                    s['clicks']   += nm.get('clicks',    0)
+                    s['sum']      += nm.get('sum',       0)
+                    s['orders']   += nm.get('orders',    0)
+                    s['orderSum'] += nm.get('sum_price', 0)
 
     if not nm_stats:
-        update_timestamp(ss, sheet_name, '❌ Нет данных')
+        set_status(ss, sheet_name, '❌ Нет данных')
         return
 
-    header = ['Артикул WB', 'Название', 'Кампания', 'Показы', 'Клики',
-              'CTR %', 'CPC ₽', 'Расход ₽', 'Заказы', 'Сумма заказов ₽', 'ДРР %',
-              f'Период: {date_from} — {date_to}']
+    headers = [
+        'Артикул WB', 'Название', 'Кампания',
+        'Показы', 'Клики', 'CTR, %', 'CPC, ₽',
+        'Расход, ₽', 'Заказы', 'Сумма заказов, ₽', 'ДРР, %',
+    ]
+    rows: list[list] = [headers]
 
-    data_rows = []
-    for nm in nm_stats.values():
-        ctr = round(nm['clicks'] / nm['views'] * 100, 2) if nm['views'] > 0 else 0
-        cpc = round(nm['sum'] / nm['clicks'], 2) if nm['clicks'] > 0 else 0
-        drr = round(nm['sum'] / nm['orderSum'] * 100, 1) if nm['orderSum'] > 0 else 0
-        camp_name = camp_names.get(nm['campId'], '')
-        data_rows.append([nm['nmId'], nm['name'], camp_name, nm['views'], nm['clicks'],
-            ctr, cpc, nm['sum'], nm['orders'], nm['orderSum'], drr, ''])
+    for s in nm_stats.values():
+        rows.append([
+            s['nmId'], s['name'], s['campName'],
+            s['views'], s['clicks'],
+            safe_div(s['clicks'], s['views'],    scale=100),
+            safe_div(s['sum'],    s['clicks']),
+            s['sum'], s['orders'], s['orderSum'],
+            safe_div(s['sum'],    s['orderSum'], scale=100, decimals=1),
+        ])
 
-    data_rows.sort(key=lambda x: x[7] if isinstance(x[7], (int, float)) else 0, reverse=True)
-
-    rows = [header] + data_rows
+    rows[1:] = sorted(rows[1:], key=lambda r: r[7], reverse=True)
     write_sheet(ss, sheet_name, rows)
-    update_timestamp(ss, sheet_name, f'✅ Готово — {len(nm_stats)} строк')
+    set_status(ss, sheet_name, f'✅ Готово — {len(nm_stats)} артикулов')
 
-def load_ads(api_key, date_from, date_to, ss):
-    log.info('Загружаем рекламу...')
-    update_timestamp(ss, 'Реклама', '🔄 Загружается...')
-    all_ids = get_campaign_ids(api_key)
-    if not all_ids:
-        update_timestamp(ss, 'Реклама', '❌ Нет кампаний')
-        return {}
-    log.info(f'Кампаний: {len(all_ids)}')
-    all_stats = []
-    for i in range(0, len(all_ids), 50):
-        chunk = all_ids[i:i+50]
-        url = f'https://advert-api.wildberries.ru/adv/v3/fullstats?ids={",".join(map(str, chunk))}&beginDate={date_from}&endDate={date_to}'
-        resp = wb_request('get', url, api_key)
-        if resp:
-            data = resp.json()
-            if data:
-                all_stats.extend(data)
-        time.sleep(22)
-    if not all_stats:
-        update_timestamp(ss, 'Реклама', '❌ Нет данных')
-        return {}
-    rows = [['ID', 'Название', 'Показы', 'Клики', 'CTR', 'CPC', 'Расход', 'Заказы', 'Сумма заказов', 'ДРР']]
-    for camp in all_stats:
-        views = sum(day.get('views', 0) for day in camp.get('days', []))
-        clicks = sum(day.get('clicks', 0) for day in camp.get('days', []))
-        spend = sum(day.get('sum', 0) for day in camp.get('days', []))
-        orders = sum(day.get('orders', 0) for day in camp.get('days', []))
-        order_sum = sum(day.get('sum_price', 0) for day in camp.get('days', []))
-        ctr = round(clicks / views * 100, 2) if views > 0 else 0
-        cpc = round(spend / clicks, 2) if clicks > 0 else 0
-        drr = round(spend / order_sum * 100, 1) if order_sum > 0 else 0
-        camp_id = str(camp.get('advertId', ''))
-        camp_name = camp.get('name') or camp.get('advertName') or ''
-        rows.append([camp_id, camp_name,
-            views, clicks, ctr, cpc, spend, orders, order_sum, drr])
-    write_sheet(ss, 'Реклама', rows)
-    update_timestamp(ss, 'Реклама', f'✅ Готово — {len(all_stats)} кампаний')
-    return build_camp_names_from_stats(all_stats)
 
-def load_funnel_period(api_key, date_from, date_to, ss, sheet_name):
-    log.info(f'Загружаем {sheet_name}...')
-    update_timestamp(ss, sheet_name, '🔄 Загружается...')
-    url = 'https://seller-analytics-api.wildberries.ru/api/analytics/v3/sales-funnel/products'
-    all_products = []
-    offset = 0
-    limit = 1000
-    page = 1
+def load_funnel_period(
+    api_key:    str,
+    date_from:  str,
+    date_to:    str,
+    ss:         gspread.Spreadsheet,
+    sheet_name: str,
+) -> None:
+    log.info('load_funnel_period [%s]: %s → %s', sheet_name, date_from, date_to)
+    set_status(ss, sheet_name, '🔄 Загружается...')
+
+    url = f'{ANALYTICS_BASE}/api/analytics/v3/sales-funnel/products'
+    all_products: list[dict] = []
+    offset, limit, page = 0, 1000, 1
+
     while True:
-        log.info(f'Страница {page}')
+        log.info('Page %d (offset %d)', page, offset)
         body = {
             'selectedPeriod': {'start': date_from, 'end': date_to},
             'nmIds': [], 'brandNames': [], 'subjectIds': [], 'tagIds': [],
-            'skipDeletedNm': False, 'limit': limit, 'offset': offset
+            'skipDeletedNm': False, 'limit': limit, 'offset': offset,
         }
         resp = wb_request('post', url, api_key, json=body)
         if not resp:
@@ -238,105 +369,119 @@ def load_funnel_period(api_key, date_from, date_to, ss, sheet_name):
         if not products:
             break
         all_products.extend(products)
-        log.info(f'Всего: {len(all_products)}')
+        log.info('Products loaded: %d', len(all_products))
         if len(products) < limit:
             break
         offset += limit
-        page += 1
-        time.sleep(60)
+        page   += 1
+        time.sleep(PAGE_SLEEP)  # 20s достаточно, было 60s
+
     if not all_products:
-        update_timestamp(ss, sheet_name, '❌ Нет данных')
+        set_status(ss, sheet_name, '❌ Нет данных')
         return
-    headers_row_period = f'Период: {date_from} — {date_to}'
-    headers_row = [
+
+    headers = [
         'Артикул продавца', 'Артикул WB', 'Название', 'Предмет', 'Бренд',
-        'Переходы в карточку', 'Переходы (пред.период)',
-        'В корзину, шт', 'В корзину (пред.)',
-        'Конв. в корзину, %', 'Конв. в корзину (пред.%)',
-        'В отложенные, шт', 'В отложенные (пред.)',
-        'Заказали, шт', 'Заказали (пред.)',
-        'Конв. в заказ, %', 'Конв. в заказ (пред.%)',
-        'Выкупили, шт', 'Выкупили (пред.)',
-        '% выкупа', '% выкупа (пред.)',
-        'Отменили, шт', 'Отменили (пред.)',
-        'Заказали на сумму', 'Заказали сумма (пред.)',
-        'Выкупили на сумму', 'Выкупили сумма (пред.)',
-        'Средняя цена', 'Средняя цена (пред.)',
+        'Переходы в карточку', 'Переходы (пред.)',
+        'В корзину, шт',      'В корзину (пред.)',
+        'Конв. в корзину, %', 'Конв. в корзину (пред., %)',
+        'В отложенные, шт',   'В отложенные (пред.)',
+        'Заказали, шт',       'Заказали (пред.)',
+        'Конв. в заказ, %',   'Конв. в заказ (пред., %)',
+        'Выкупили, шт',       'Выкупили (пред.)',
+        '% выкупа',           '% выкупа (пред.)',
+        'Отменили, шт',       'Отменили (пред.)',
+        'Заказали на сумму',  'Заказали сумма (пред.)',
+        'Выкупили на сумму',  'Выкупили сумма (пред.)',
+        'Средняя цена',       'Средняя цена (пред.)',
         'Остатки WB', 'Рейтинг товара', 'Рейтинг отзывов',
-        'Время доставки ч', 'Время доставки пред ч', headers_row_period
+        'Время доставки, ч',  'Время доставки (пред.), ч',
     ]
-    rows = [headers_row]
+    rows: list[list] = [headers]
+
     for item in all_products:
         prod = item.get('product', {})
-        s = item.get('statistic', {}).get('selected', {})
-        p = item.get('statistic', {}).get('past', {})
-        sc = s.get('conversions', {})
-        pc = p.get('conversions', {})
-        st = s.get('timeToReady', {})
-        pt = p.get('timeToReady', {})
-        stk = prod.get('stocks', {})
+        s    = item.get('statistic', {}).get('selected', {})
+        p    = item.get('statistic', {}).get('past',     {})
+        sc   = s.get('conversions', {})
+        pc   = p.get('conversions', {})
+        st   = s.get('timeToReady', {})
+        pt   = p.get('timeToReady', {})
+        stk  = prod.get('stocks',   {})
+
         rows.append([
-            prod.get('vendorCode', ''), prod.get('nmId', ''),
-            prod.get('title', ''), prod.get('subjectName', ''), prod.get('brandName', ''),
-            s.get('openCount', 0), p.get('openCount', 0),
-            s.get('cartCount', 0), p.get('cartCount', 0),
-            sc.get('addToCartPercent', 0), pc.get('addToCartPercent', 0),
-            s.get('addToWishlist', 0), p.get('addToWishlist', 0),
-            s.get('orderCount', 0), p.get('orderCount', 0),
-            sc.get('cartToOrderPercent', 0), pc.get('cartToOrderPercent', 0),
-            s.get('buyoutCount', 0), p.get('buyoutCount', 0),
-            sc.get('buyoutPercent', 0), pc.get('buyoutPercent', 0),
-            s.get('cancelCount', 0), p.get('cancelCount', 0),
-            s.get('orderSum', 0), p.get('orderSum', 0),
-            s.get('buyoutSum', 0), p.get('buyoutSum', 0),
-            s.get('avgPrice', 0), p.get('avgPrice', 0),
-            stk.get('wb', 0), prod.get('productRating', 0),
-            prod.get('feedbackRating', 0),
+            prod.get('vendorCode',     ''), prod.get('nmId',          ''),
+            prod.get('title',          ''), prod.get('subjectName',   ''),
+            prod.get('brandName',      ''),
+            s.get('openCount',          0), p.get('openCount',         0),
+            s.get('cartCount',          0), p.get('cartCount',         0),
+            sc.get('addToCartPercent',  0), pc.get('addToCartPercent', 0),
+            s.get('addToWishlist',      0), p.get('addToWishlist',     0),
+            s.get('orderCount',         0), p.get('orderCount',        0),
+            sc.get('cartToOrderPercent',0), pc.get('cartToOrderPercent',0),
+            s.get('buyoutCount',        0), p.get('buyoutCount',       0),
+            sc.get('buyoutPercent',     0), pc.get('buyoutPercent',    0),
+            s.get('cancelCount',        0), p.get('cancelCount',       0),
+            s.get('orderSum',           0), p.get('orderSum',          0),
+            s.get('buyoutSum',          0), p.get('buyoutSum',         0),
+            s.get('avgPrice',           0), p.get('avgPrice',          0),
+            stk.get('wb',               0), prod.get('productRating',  0),
+            prod.get('feedbackRating',  0),
             st.get('days', 0) * 24 + st.get('hours', 0),
             pt.get('days', 0) * 24 + pt.get('hours', 0),
         ])
-    write_sheet(ss, sheet_name, rows)
-    update_timestamp(ss, sheet_name, f'✅ Готово — {len(all_products)} товаров')
 
-if __name__ == '__main__':
-    log.info(f'Запуск main2: {datetime.now()}')
-    ss = get_spreadsheet()
+    write_sheet(ss, sheet_name, rows)
+    set_status(ss, sheet_name, f'✅ Готово — {len(all_products)} товаров')
+
+# ── Точка входа ────────────────────────────────────────────────────────────────
+
+def main() -> None:
+    log.info('=== main2 started ===')
+    ss      = get_spreadsheet()
     api_key = get_api_key(ss)
     date_from, date_to = get_dates(ss)
 
-    today = datetime.now()
+    today       = datetime.now()
     yesterday   = (today - timedelta(days=1)).strftime('%Y-%m-%d')
     week_from   = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
-    days14_to   = (today - timedelta(days=8)).strftime('%Y-%m-%d')
     month_from  = today.replace(day=1).strftime('%Y-%m-%d')
 
-    load_ads(api_key, date_from, date_to, ss)
+    # Загружаем рекламу за основной период + получаем ids и names
+    campaign_ids, id_to_name, _ = load_ads(api_key, date_from, date_to, ss)
     time.sleep(10)
 
-    log.info('Загружаем все РК периоды за один проход...')
-    all_ids = get_campaign_ids(api_key)
-    if all_ids:
-        month_stats = get_all_rk_stats(api_key, all_ids, month_from, yesterday)
-        camp_names = build_camp_names_from_stats(month_stats)
+    # Один запрос fullstats за месяц — фильтруем локально для каждого периода.
+    # Это экономит API-вызовы: 1 запрос вместо 4.
+    if campaign_ids:
+        log.info('Fetching month stats for all RK periods...')
+        month_stats = fetch_fullstats(api_key, campaign_ids, month_from, yesterday)
+        time.sleep(5)
+
+        for sheet_name, df, dt in [
+            ('РК День',    yesterday,   yesterday),
+            ('РК Неделя',  week_from,   yesterday),
+            ('РК 14 Дней', days14_from, yesterday),
+            ('РК Месяц',   month_from,  yesterday),
+        ]:
+            write_rk_period(month_stats, id_to_name, df, dt, ss, sheet_name)
+            time.sleep(5)
+
+    time.sleep(10)
+
+    for sheet_name, df, dt in [
+        ('Воронка День',    yesterday,   yesterday),
+        ('Воронка Неделя',  week_from,   yesterday),
+        ('Воронка 14 Дней', days14_from, yesterday),
+        ('Воронка Месяц',   month_from,  yesterday),
+    ]:
+        load_funnel_period(api_key, df, dt, ss, sheet_name)
         time.sleep(10)
-        write_rk_from_stats(month_stats, yesterday, yesterday, ss, 'РК День', camp_names)
-        time.sleep(5)
-        write_rk_from_stats(month_stats, week_from, yesterday, ss, 'РК Неделя', camp_names)
-        time.sleep(5)
-        write_rk_from_stats(month_stats, days14_from, days14_to, ss, 'РК 14 Дней', camp_names)
-        time.sleep(5)
-        write_rk_from_stats(month_stats, month_from, yesterday, ss, 'РК Месяц', camp_names)
 
-    time.sleep(10)
+    set_status(ss, 'Все данные', f'✅ Завершено — {datetime.now().strftime("%d.%m.%Y %H:%M")}')
+    log.info('=== main2 complete ===')
 
-    load_funnel_period(api_key, yesterday, yesterday, ss, 'Воронка День')
-    time.sleep(10)
-    load_funnel_period(api_key, week_from, yesterday, ss, 'Воронка Неделя')
-    time.sleep(10)
-    load_funnel_period(api_key, days14_from, days14_to, ss, 'Воронка 14 Дней')
-    time.sleep(10)
-    load_funnel_period(api_key, month_from, yesterday, ss, 'Воронка Месяц')
 
-    update_timestamp(ss, 'Все данные', f'✅ Всё завершено — {datetime.now().strftime("%d.%m.%Y %H:%M")}')
-    log.info(f'main2 завершён: {datetime.now()}')
+if __name__ == '__main__':
+    main()
