@@ -51,6 +51,18 @@ def get_api_key(ss: gspread.Spreadsheet) -> str:
     return ss.worksheet('Настройки').acell('B2').value.strip()
 
 
+def set_date_range(ss: gspread.Spreadsheet, date_from: str, date_to: str) -> None:
+    try:
+        ws       = ss.worksheet('Настройки')
+        from_fmt = datetime.strptime(date_from, '%Y-%m-%d').strftime('%Y-%m-%d')
+        to_fmt   = datetime.strptime(date_to,   '%Y-%m-%d').strftime('%Y-%m-%d')
+        ws.update(values=[[from_fmt]], range_name='B3')
+        ws.update(values=[[to_fmt]],   range_name='B4')
+        log.info('Дата ОТ/ДО обновлены: %s — %s', from_fmt, to_fmt)
+    except Exception as exc:
+        log.warning('set_date_range error: %s', exc)
+
+
 def set_status(ss: gspread.Spreadsheet, name: str, status: str) -> None:
     try:
         now = datetime.now().strftime('%d.%m.%Y %H:%M:%S')
@@ -300,6 +312,10 @@ def load_funnel_period(
         set_status(ss, sheet_name, '❌ Нет данных')
         return
 
+    period_label = (
+        f"{datetime.strptime(date_from, '%Y-%m-%d').strftime('%d.%m.%Y')} — "
+        f"{datetime.strptime(date_to,   '%Y-%m-%d').strftime('%d.%m.%Y')}"
+    )
     headers = [
         'Артикул продавца', 'Артикул WB', 'Название', 'Предмет', 'Бренд',
         'Переходы в карточку', 'Переходы (пред.)',
@@ -316,6 +332,7 @@ def load_funnel_period(
         'Средняя цена',       'Средняя цена (пред.)',
         'Остатки WB', 'Рейтинг товара', 'Рейтинг отзывов',
         'Время доставки, ч',  'Время доставки (пред.), ч',
+        'Период выгрузки',
     ]
     rows: list[list] = [headers]
 
@@ -349,6 +366,7 @@ def load_funnel_period(
             prod.get('feedbackRating',  0),
             st.get('days', 0) * 24 + st.get('hours', 0),
             pt.get('days', 0) * 24 + pt.get('hours', 0),
+            period_label,
         ])
 
     write_sheet(ss, sheet_name, rows)
@@ -365,7 +383,9 @@ def main() -> None:
     yesterday   = (today - timedelta(days=1)).strftime('%Y-%m-%d')
     week_from   = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
-    month_from  = today.replace(day=1).strftime('%Y-%m-%d')
+    month_from  = min(today.replace(day=1), today - timedelta(days=1)).strftime('%Y-%m-%d')
+
+    set_date_range(ss, month_from, yesterday)
 
     campaign_ids, id_to_name = get_campaigns(api_key)
     if not campaign_ids:

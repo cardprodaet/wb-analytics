@@ -8,7 +8,7 @@ on:
 jobs:
   update-all:
     runs-on: ubuntu-latest
-    timeout-minutes: 180
+    timeout-minutes: 300  # старт 01:00 UTC + 300 мин = макс 06:00 UTC = 09:00 МСК
 
     steps:
     - uses: actions/checkout@v4

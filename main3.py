@@ -150,6 +150,10 @@ def load_funnel_period(
         set_status(ss, sheet_name, '❌ Нет данных')
         return
 
+    period_label = (
+        f"{datetime.strptime(date_from, '%Y-%m-%d').strftime('%d.%m.%Y')} — "
+        f"{datetime.strptime(date_to,   '%Y-%m-%d').strftime('%d.%m.%Y')}"
+    )
     headers = [
         'Артикул продавца', 'Артикул WB', 'Название', 'Предмет', 'Бренд',
         'Переходы в карточку', 'Переходы (пред.)',
@@ -166,6 +170,7 @@ def load_funnel_period(
         'Средняя цена',       'Средняя цена (пред.)',
         'Остатки WB', 'Рейтинг товара', 'Рейтинг отзывов',
         'Время доставки, ч',  'Время доставки (пред.), ч',
+        'Период выгрузки',
     ]
     rows: list[list] = [headers]
 
@@ -199,6 +204,7 @@ def load_funnel_period(
             prod.get('feedbackRating',  0),
             st.get('days', 0) * 24 + st.get('hours', 0),
             pt.get('days', 0) * 24 + pt.get('hours', 0),
+            period_label,
         ])
 
     write_sheet(ss, sheet_name, rows)
