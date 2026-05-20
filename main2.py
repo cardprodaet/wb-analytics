@@ -385,7 +385,8 @@ def main() -> None:
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
     month_from  = min(today.replace(day=1), today - timedelta(days=1)).strftime('%Y-%m-%d')
 
-    set_date_range(ss, month_from, yesterday)
+    week_ago = (today - timedelta(days=7)).strftime('%Y-%m-%d')
+    set_date_range(ss, week_ago, yesterday)
 
     campaign_ids, id_to_name = get_campaigns(api_key)
     if not campaign_ids:
