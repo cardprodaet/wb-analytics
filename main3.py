@@ -170,7 +170,7 @@ def load_funnel_period(
         'Средняя цена',       'Средняя цена (пред.)',
         'Остатки WB', 'Рейтинг товара', 'Рейтинг отзывов',
         'Время доставки, ч',  'Время доставки (пред.), ч',
-        'Период выгрузки',
+        period_label,
     ]
     rows: list[list] = [headers]
 
@@ -204,7 +204,7 @@ def load_funnel_period(
             prod.get('feedbackRating',  0),
             st.get('days', 0) * 24 + st.get('hours', 0),
             pt.get('days', 0) * 24 + pt.get('hours', 0),
-            period_label,
+            '',
         ])
 
     write_sheet(ss, sheet_name, rows)
