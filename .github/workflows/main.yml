@@ -2,13 +2,13 @@ name: WB Analytics Daily Update
 
 on:
   schedule:
-    - cron: '0 1 * * *'   # 01:00 UTC = 04:00 МСК
+    - cron: '0 23 * * *'  # 23:00 UTC = 02:00 МСК
   workflow_dispatch:       # ручной запуск из GitHub UI
 
 jobs:
   update-all:
     runs-on: ubuntu-latest
-    timeout-minutes: 300  # старт 01:00 UTC + 300 мин = макс 06:00 UTC = 09:00 МСК
+    timeout-minutes: 420  # старт 23:00 UTC + 420 мин = макс 06:00 UTC = 09:00 МСК
 
     steps:
     - uses: actions/checkout@v4
