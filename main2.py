@@ -383,7 +383,7 @@ def main() -> None:
     yesterday   = (today - timedelta(days=1)).strftime('%Y-%m-%d')
     week_from   = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
-    month_from  = min(today.replace(day=1), today - timedelta(days=1)).strftime('%Y-%m-%d')
+    month_from  = (today - timedelta(days=1)).replace(day=1).strftime('%Y-%m-%d')
 
     week_ago = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     set_date_range(ss, week_ago, yesterday)

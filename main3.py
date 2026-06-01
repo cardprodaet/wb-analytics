@@ -221,7 +221,7 @@ def main() -> None:
     yesterday   = (today - timedelta(days=1)).strftime('%Y-%m-%d')
     week_from   = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
-    month_from  = today.replace(day=1).strftime('%Y-%m-%d')
+    month_from  = (today - timedelta(days=1)).replace(day=1).strftime('%Y-%m-%d')
 
     for sheet_name, df, dt in [
         ('Воронка День',    yesterday,   yesterday),
