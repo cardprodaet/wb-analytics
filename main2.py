@@ -383,7 +383,12 @@ def main() -> None:
     yesterday   = (today - timedelta(days=1)).strftime('%Y-%m-%d')
     week_from   = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     days14_from = (today - timedelta(days=14)).strftime('%Y-%m-%d')
+    days14_to   = (today - timedelta(days=8)).strftime('%Y-%m-%d')
     month_from  = (today - timedelta(days=1)).replace(day=1).strftime('%Y-%m-%d')
+
+    # fullstats нужно тянуть с самой ранней даты среди всех периодов,
+    # иначе РК 14 Дней (и РК Неделя в начале месяца) теряют данные из прошлого месяца
+    fetch_from  = min(month_from, days14_from)
 
     week_ago = (today - timedelta(days=7)).strftime('%Y-%m-%d')
     set_date_range(ss, week_ago, yesterday)
@@ -392,11 +397,10 @@ def main() -> None:
     if not campaign_ids:
         log.warning('Нет кампаний — РК периоды пропущены')
     else:
-        log.info('Fetching month stats for all RK periods...')
-        month_stats = fetch_fullstats(api_key, campaign_ids, month_from, yesterday)
+        log.info('Fetching stats from %s to %s for all RK periods...', fetch_from, yesterday)
+        month_stats = fetch_fullstats(api_key, campaign_ids, fetch_from, yesterday)
         time.sleep(5)
 
-        days14_to = (today - timedelta(days=8)).strftime('%Y-%m-%d')
         for sheet_name, df, dt in [
             ('РК День',    yesterday,   yesterday),
             ('РК Неделя',  week_from,   yesterday),
