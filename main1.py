@@ -223,16 +223,24 @@ def load_stocks(api_key: str, date_from: str, ss: gspread.Spreadsheet) -> None:
     log.info('load_stocks')
     set_status(ss, 'Остатки', '🔄 Загружается...')
 
-    resp = wb_request(
-        'get',
-        f'{STATS_BASE}/api/v1/supplier/stocks?dateFrom={date_from}T00:00:00',
-        api_key,
-    )
-    if not resp:
-        set_status(ss, 'Остатки', '❌ Ошибка запроса')
-        return
+    url  = ('https://seller-analytics-api.wildberries.ru'
+            '/api/analytics/v1/stocks-report/wb-warehouses')
+    data, offset, PAGE = [], 0, 10000
+    while True:
+        resp = wb_request('post', url, api_key,
+                          json={'limit': PAGE, 'offset': offset})
+        if not resp:
+            break
+        chunk = resp.json().get('data', {}).get('items', [])
+        if not chunk:
+            break
+        data.extend(chunk)
+        log.info('Остатки: загружено %d строк', len(data))
+        if len(chunk) < PAGE:
+            break
+        offset += PAGE
+        time.sleep(20)
 
-    data = resp.json()
     if not data:
         set_status(ss, 'Остатки', '❌ Нет данных')
         return
