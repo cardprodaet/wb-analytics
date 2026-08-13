@@ -251,6 +251,79 @@ def load_stocks(api_key: str, date_from: str, ss: gspread.Spreadsheet) -> None:
     set_status(ss, 'Остатки', f'✅ Готово — {len(data)} позиций')
 
 
+def load_stocks_by_warehouse(api_key: str, ss: gspread.Spreadsheet) -> None:
+    """Остатки с разбивкой по складам — отдельный лист."""
+    from collections import defaultdict
+    from gspread.exceptions import WorksheetNotFound
+
+    SHEET = 'Остатки по складам'
+    log.info('load_stocks_by_warehouse')
+    set_status(ss, SHEET, '🔄 Загружается...')
+
+    ref = {}
+    try:
+        for r in ss.worksheet('Воронка').get_all_values()[1:]:
+            if len(r) >= 5 and r[1]:
+                ref[str(r[1]).strip()] = (r[4], r[3], r[0])
+    except Exception as e:
+        log.warning('Воронка недоступна: %s', e)
+
+    url = ('https://seller-analytics-api.wildberries.ru'
+           '/api/analytics/v1/stocks-report/wb-warehouses')
+    raw, offset, PAGE = [], 0, 10000
+    while True:
+        resp = wb_request('post', url, api_key,
+                          json={'limit': PAGE, 'offset': offset})
+        if not resp:
+            break
+        chunk = resp.json().get('data', {}).get('items', [])
+        if not chunk:
+            break
+        raw.extend(chunk)
+        if len(chunk) < PAGE:
+            break
+        offset += PAGE
+        time.sleep(20)
+
+    if not raw:
+        set_status(ss, SHEET, '❌ Нет данных')
+        return
+
+    items, wh_totals = {}, defaultdict(int)
+    for r in raw:
+        nm = str(r.get('nmId', ''))
+        it = items.setdefault(nm, {'toClient': 0, 'fromClient': 0,
+                                   'total': 0, 'wh': defaultdict(int)})
+        wh  = r.get('warehouseName') or '—'
+        qty = r.get('quantity', 0) or 0
+        it['wh'][wh]     += qty
+        it['total']      += qty
+        it['toClient']   += r.get('inWayToClient', 0) or 0
+        it['fromClient'] += r.get('inWayFromClient', 0) or 0
+        wh_totals[wh]    += qty
+
+    warehouses = [w for w, _ in sorted(wh_totals.items(), key=lambda x: -x[1])]
+    header = ['Бренд', 'Предмет', 'Артикул продавца', 'Артикул WB',
+              'В пути до получателей', 'В пути возвраты на склад WB',
+              'Всего на складах'] + warehouses
+    out = [header]
+    for nm, it in items.items():
+        brand, subject, art = ref.get(nm, ('', '', ''))
+        out.append([brand, subject, art, nm,
+                    it['toClient'], it['fromClient'], it['total']]
+                   + [it['wh'].get(w, 0) for w in warehouses])
+    out[1:] = sorted(out[1:], key=lambda r: r[6], reverse=True)
+
+    try:
+        ss.worksheet(SHEET)
+    except WorksheetNotFound:
+        ss.add_worksheet(title=SHEET, rows=max(len(out) + 50, 1000),
+                         cols=len(header) + 5)
+
+    write_sheet(ss, SHEET, out)
+    set_status(ss, SHEET, f'✅ Готово — {len(out) - 1} артикулов')
+
+
 def _load_daily(
     api_key:    str,
     endpoint:   str,
@@ -309,6 +382,8 @@ def main() -> None:
     load_funnel(api_key, date_from, date_to, ss)
     time.sleep(10)
     load_stocks(api_key, date_from, ss)
+    time.sleep(10)
+    load_stocks_by_warehouse(api_key, ss)
     time.sleep(10)
     load_sales(api_key, date_from, ss)
     time.sleep(10)
