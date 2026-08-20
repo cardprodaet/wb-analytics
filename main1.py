@@ -252,7 +252,7 @@ def load_stocks(api_key: str, date_from: str, ss: gspread.Spreadsheet) -> None:
 
 
 def load_stocks_by_warehouse(api_key: str, ss: gspread.Spreadsheet) -> None:
-    """Остатки с разбивкой по складам — отдельный лист."""
+    """Остатки по складам WB. С августа 2026 WB отдаёт единый «Склад WB»."""
     from collections import defaultdict
     from gspread.exceptions import WorksheetNotFound
 
@@ -294,7 +294,7 @@ def load_stocks_by_warehouse(api_key: str, ss: gspread.Spreadsheet) -> None:
         nm = str(r.get('nmId', ''))
         it = items.setdefault(nm, {'toClient': 0, 'fromClient': 0,
                                    'total': 0, 'wh': defaultdict(int)})
-        wh  = r.get('warehouseName') or '—'
+        wh  = r.get('warehouseName') or 'Склад WB'
         qty = r.get('quantity', 0) or 0
         it['wh'][wh]     += qty
         it['total']      += qty
@@ -303,6 +303,8 @@ def load_stocks_by_warehouse(api_key: str, ss: gspread.Spreadsheet) -> None:
         wh_totals[wh]    += qty
 
     warehouses = [w for w, _ in sorted(wh_totals.items(), key=lambda x: -x[1])]
+    log.info('Складов в ответе: %d', len(warehouses))
+
     header = ['Бренд', 'Предмет', 'Артикул продавца', 'Артикул WB',
               'В пути до получателей', 'В пути возвраты на склад WB',
               'Всего на складах'] + warehouses
@@ -315,10 +317,12 @@ def load_stocks_by_warehouse(api_key: str, ss: gspread.Spreadsheet) -> None:
     out[1:] = sorted(out[1:], key=lambda r: r[6], reverse=True)
 
     try:
-        ss.worksheet(SHEET)
+        sh = ss.worksheet(SHEET)
+        sh.clear()
+        sh.resize(rows=max(len(out) + 50, 1000), cols=len(header) + 2)
     except WorksheetNotFound:
         ss.add_worksheet(title=SHEET, rows=max(len(out) + 50, 1000),
-                         cols=len(header) + 5)
+                         cols=len(header) + 2)
 
     write_sheet(ss, SHEET, out)
     set_status(ss, SHEET, f'✅ Готово — {len(out) - 1} артикулов')
