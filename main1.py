@@ -178,7 +178,7 @@ def load_funnel(
         'Заказали на сумму',  'Заказали сумма (пред.)',
         'Выкупили на сумму',  'Выкупили сумма (пред.)',
         'Средняя цена',       'Средняя цена (пред.)',
-        'Остатки WB', 'Рейтинг товара', 'Рейтинг отзывов',
+        'Остатки WB', 'Остаток свой склад', 'Рейтинг товара', 'Рейтинг отзывов',
         'Время доставки, ч',  'Время доставки (пред.), ч',
     ]
     rows: list[list] = [headers]
@@ -209,7 +209,7 @@ def load_funnel(
             s.get('orderSum',           0), p.get('orderSum',          0),
             s.get('buyoutSum',          0), p.get('buyoutSum',         0),
             s.get('avgPrice',           0), p.get('avgPrice',          0),
-            stk.get('wb',               0), prod.get('productRating',  0),
+            stk.get('wb',               0), stk.get('mp',               0), prod.get('productRating',  0),
             prod.get('feedbackRating',  0),
             st.get('days', 0) * 24 + st.get('hours', 0),
             pt.get('days', 0) * 24 + pt.get('hours', 0),
