@@ -24,12 +24,29 @@ jobs:
     - name: Create credentials file
       run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
 
-    - name: Part 1 — RK periods, Funnel periods
+    - name: Part 1 — Funnel, Stocks, Sales, Orders
+      run: python main1.py
+
+    - name: Part 2 — RK periods, Funnel periods
       run: python main2.py
 
-    - name: Part 2 — Funnel periods (standalone)
+    - name: Part 3 — Funnel periods (standalone)
       run: python main3.py
 
     - name: Remove credentials file
       if: always()
       run: rm -f credentials.json
+
+    - name: Telegram — успех
+      if: success()
+      run: |
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+          --data-urlencode "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+          --data-urlencode "text=✅ WB Analytics — обновление прошло успешно"
+
+    - name: Telegram — сбой
+      if: failure()
+      run: |
+        curl -s -X POST "https://api.telegram.org/bot${{ secrets.TELEGRAM_TOKEN }}/sendMessage" \
+          --data-urlencode "chat_id=${{ secrets.TELEGRAM_CHAT_ID }}" \
+          --data-urlencode "text=❌ WB Analytics — обновление УПАЛО. Логи: https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}"
