@@ -149,7 +149,23 @@ def get_campaigns(api_key: str) -> tuple[list[int], dict[int, str]]:
     ]
     log.info('Campaigns found: %d', len(all_ids))
 
-    return all_ids, {}
+    # Названия кампаний — отдельный метод, в статистике их нет
+    id_to_name: dict[int, str] = {}
+    r = wb_request('get', f'{ADV_BASE}/api/advert/v2/adverts?limit=1000', api_key)
+    if r:
+        try:
+            id_to_name = {
+                int(a['id']): (a.get('settings') or {}).get('name', '')
+                for a in r.json().get('adverts', [])
+                if a.get('id')
+            }
+            log.info('Campaign names: %d', len(id_to_name))
+        except Exception as e:
+            log.warning('Не разобрал справочник кампаний: %s', e)
+    else:
+        log.warning('Справочник кампаний недоступен')
+
+    return all_ids, id_to_name
 
 
 def _fetch_campaign_names(api_key: str, campaign_ids: list[int]) -> dict[int, str]:
