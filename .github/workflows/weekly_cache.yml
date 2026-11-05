@@ -1,0 +1,21 @@
+name: Первичная загрузка недель (кэш)
+
+on:
+  workflow_dispatch:
+
+jobs:
+  weekly:
+    runs-on: ubuntu-latest
+    timeout-minutes: 360
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - run: pip install -r requirements.txt
+    - run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+    - name: Загрузка недель
+      run: python weekly_cache.py
+    - name: Удалить credentials
+      if: always()
+      run: rm -f credentials.json
