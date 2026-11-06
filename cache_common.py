@@ -62,7 +62,7 @@ def append_rows(sh, rows):
     for i in range(0, len(rows), 500):
         for attempt in range(1, 11):
             try:
-                sh.append_rows(rows[i:i + 500], value_input_option='RAW')
+                sh.append_rows(rows[i:i + 500], value_input_option='USER_ENTERED')
                 break
             except APIError:
                 time.sleep(70)
