@@ -1,0 +1,23 @@
+name: Дополнение кэша (еженедельно)
+
+on:
+  schedule:
+    - cron: '0 1 * * 1'   # каждый понедельник 01:00 UTC = 04:00 МСК
+  workflow_dispatch:
+
+jobs:
+  update:
+    runs-on: ubuntu-latest
+    timeout-minutes: 240
+    steps:
+    - uses: actions/checkout@v4
+    - uses: actions/setup-python@v5
+      with:
+        python-version: '3.11'
+    - run: pip install -r requirements.txt
+    - run: echo '${{ secrets.GOOGLE_CREDENTIALS }}' > credentials.json
+    - name: Дополнение кэша
+      run: python cache_update.py
+    - name: Удалить credentials
+      if: always()
+      run: rm -f credentials.json
